@@ -48,18 +48,25 @@ class VolumeViewer:
         volume = ax.volume
         ax.index = (ax.index - 1) % volume.shape[0]  # wrap around using %
         ax.images[0].set_array(volume[ax.index])
+        ax.texts.pop()
+        ax.text(5, 15, f"Slice: {ax.index}", color="white")
 
     @staticmethod
     def next_slice(ax):
         volume = ax.volume
         ax.index = (ax.index + 1) % volume.shape[0]
         ax.images[0].set_array(volume[ax.index])
+        ax.texts.pop()
+        ax.text(5, 15, f"Slice: {ax.index}", color="white")
 
     @staticmethod
     def prepare_volume(volume):
         # Prepare volume
         if isinstance(volume, np.ndarray):
-            volume = torch.from_numpy(volume)
+            try:
+                volume = torch.from_numpy(volume)
+            except ValueError:
+                volume = torch.from_numpy(volume.copy())
         if volume.ndim == 4:
             volume = volume[0]
         if volume.shape[0] < volume.shape[1]:
@@ -69,7 +76,7 @@ class VolumeViewer:
 
         return volume
 
-    def plot(self, volume):
+    def __call__(self, volume):
         """volume is a torch.Tensor or np.array with shape [slices, h, w]
         and axial viewing direction"""
 
@@ -80,6 +87,7 @@ class VolumeViewer:
             aspect = shape[2] / shape[1]
             ax.imshow(ax.volume[ax.index], aspect=aspect)
             ax.set_title(title)
+            ax.text(5, 15, f"Slice: {ax.index}", color="white")
 
         volume = self.prepare_volume(volume)
 
