@@ -1,10 +1,19 @@
+# Hidden files
+.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Single directories
+/uas_mood.egg-info/
+
+# Recursive directories
+.ipynb_checkpoints/
+__pycache__/
+.pytest_cache/
+.vscode/
 
 # Tester file
-tester.py
+/uas_mood/tester.py

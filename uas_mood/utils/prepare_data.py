@@ -1,7 +1,11 @@
 import os
 import shutil
 
+from collections import defaultdict
 from glob import glob
+
+from uas_mood.utils.data_utils import nii_loader
+from uas_mood.utils.artificial_anomalies import create_random_anomaly
 
 """ Global variables """
 
@@ -119,10 +123,28 @@ def split_ds(root):
     print(f"Moved {len(test_files)} fo {test_folder}")
 
 
+def create_test_anomalies(root):
+    counts = defaultdict(int)
+    files = sorted(glob(f"{root}/?????.nii.gz"))
+
+    for f in files:
+        volume = nii_loader(f, dtype="float64")
+        anomaly, anomaly_type = create_random_anomaly(volume)
+        target = f"{f.split('.nii.gz')[0]}_{anomaly_type}.nii.gz"
+        counts[anomaly_type] += 1
+        import IPython ; IPython.embed() ; exit(1)
+        # Save
+
+
+
 if __name__ == '__main__':
     # Check if data is correctly downloaded
-    sanity_check()
-    print("Splitting abdom files")
-    split_ds(ABDOMROOT)
-    print("Splitting brain files")
-    split_ds(BRAINROOT)
+    # sanity_check()
+    # print("Splitting abdom files")
+    # split_ds(ABDOMROOT)
+    # print("Splitting brain files")
+    # split_ds(BRAINROOT)
+    print("Creating artificial anomalies for val")
+    create_test_anomalies(os.path.join(BRAINROOT, "val"))
+    print("Creating artificial anomalies for test")
+    create_test_anomalies(os.path.join(BRAINROOT, "test"))

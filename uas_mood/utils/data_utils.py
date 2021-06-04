@@ -1,21 +1,18 @@
-import os
+import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
+from skimage.transform import resize
 import torch
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 
 
-class VolumeViewer:
-    def __init__(self):
-        """Plot a volume of shape [x, y, slices]
-        Useful for MR and CT image volumes"""
-        plt.rcParams['image.cmap'] = 'gray'
-        plt.rcParams['image.interpolation'] = 'nearest'
+def volume_viewer(volume):
+    """Plot a volume of shape [x, y, slices]
+    Useful for MR and CT image volumes
 
-        self.remove_keymap_conflicts({'h', 'j', 'k', 'l'})
-
-    @staticmethod
+    Args:
+        volume (torch.Tensor or np.ndarray): With shape [slices, h, w]"""
+    
     def remove_keymap_conflicts(new_keys_set):
         for prop in plt.rcParams:
             if prop.startswith('keymap.'):
@@ -24,26 +21,6 @@ class VolumeViewer:
                 for key in remove_list:
                     keys.remove(key)
 
-    def process_key(self, event):
-        fig = event.canvas.figure
-        # Move axial (slices)
-        if event.key == 'j':
-            self.next_slice(fig.axes[0])
-        elif event.key == 'k':
-            self.previous_slice(fig.axes[0])
-        # Move coronal (h)
-        elif event.key == 'u':
-            self.previous_slice(fig.axes[1])
-        elif event.key == 'i':
-            self.next_slice(fig.axes[1])
-        # Move saggital (w)
-        elif event.key == 'h':
-            self.previous_slice(fig.axes[2])
-        elif event.key == 'l':
-            self.next_slice(fig.axes[2])
-        fig.canvas.draw()
-
-    @staticmethod
     def previous_slice(ax):
         volume = ax.volume
         ax.index = (ax.index - 1) % volume.shape[0]  # wrap around using %
@@ -51,7 +28,6 @@ class VolumeViewer:
         ax.texts.pop()
         ax.text(5, 15, f"Slice: {ax.index}", color="white")
 
-    @staticmethod
     def next_slice(ax):
         volume = ax.volume
         ax.index = (ax.index + 1) % volume.shape[0]
@@ -59,49 +35,76 @@ class VolumeViewer:
         ax.texts.pop()
         ax.text(5, 15, f"Slice: {ax.index}", color="white")
 
-    @staticmethod
+    def process_key(event):
+        fig = event.canvas.figure
+        # Move axial (slices)
+        if event.key == 'j':
+            next_slice(fig.axes[0])
+        elif event.key == 'k':
+            previous_slice(fig.axes[0])
+        # Move coronal (h)
+        elif event.key == 'u':
+            previous_slice(fig.axes[1])
+        elif event.key == 'i':
+            next_slice(fig.axes[1])
+        # Move saggital (w)
+        elif event.key == 'h':
+            previous_slice(fig.axes[2])
+        elif event.key == 'l':
+            next_slice(fig.axes[2])
+        fig.canvas.draw()
+
     def prepare_volume(volume):
-        # Prepare volume
+        # Convert to torch
         if isinstance(volume, np.ndarray):
             try:
                 volume = torch.from_numpy(volume)
             except ValueError:
                 volume = torch.from_numpy(volume.copy())
+
+        # Omit batch dimension
         if volume.ndim == 4:
             volume = volume[0]
+
+        # Pad slices
         if volume.shape[0] < volume.shape[1]:
-            # Pad slices
             pad = (volume.shape[1] - volume.shape[0]) // 2
             volume = F.pad(volume, [0, 0, 0, 0, pad, pad])
 
+        # Transform such that axial view is first
+        volume = torch.flip(volume, [2, 1, 0])
+        volume = volume.permute(2, 1, 0)
+
         return volume
 
-    def __call__(self, volume):
-        """volume is a torch.Tensor or np.array with shape [slices, h, w]
-        and axial viewing direction"""
+    def plot_ax(ax, volume, title):
+        ax.volume = volume
+        shape = ax.volume.shape
+        ax.index = shape[0] // 2
+        aspect = shape[2] / shape[1]
+        ax.imshow(ax.volume[ax.index], aspect=aspect)
+        ax.set_title(title)
+        ax.text(5, 15, f"Slice: {ax.index}", color="white")
 
-        def plot_ax(ax, volume, title):
-            ax.volume = volume
-            shape = ax.volume.shape
-            ax.index = shape[0] // 2
-            aspect = shape[2] / shape[1]
-            ax.imshow(ax.volume[ax.index], aspect=aspect)
-            ax.set_title(title)
-            ax.text(5, 15, f"Slice: {ax.index}", color="white")
+    plt.rcParams['image.cmap'] = 'gray'
+    plt.rcParams['image.interpolation'] = 'nearest'
 
-        volume = self.prepare_volume(volume)
+    remove_keymap_conflicts({'h', 'j', 'k', 'l'})
 
-        # Volume shape [slices, h, w]
-        fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-        plot_ax(ax[0], volume, "axial")  # axial [slices, h, w]
-        plot_ax(ax[1], volume.permute(1, 0, 2), "coronal")  # saggital [h, slices, w]
-        plot_ax(ax[2], volume.permute(2, 0, 1), "saggital")  # coronal [w, slices, h]
-        fig.canvas.mpl_connect('key_press_event', self.process_key)
-        print("Plotting volume, navigate:" \
-              "\naxial with 'j', 'k'" \
-              "\ncoronal with 'u', 'i'" \
-              "\nsaggital with 'h', 'l'")
-        plt.show()
+    volume = prepare_volume(volume)
+
+    # Volume shape [slices, h, w]
+    # fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+    fig, ax = plt.subplots(1, 3, figsize=(8, 3))
+    plot_ax(ax[0], volume, "axial")  # axial [slices, h, w]
+    plot_ax(ax[1], volume.permute(1, 0, 2), "coronal")  # saggital [h, slices, w]
+    plot_ax(ax[2], volume.permute(2, 0, 1), "saggital")  # coronal [w, slices, h]
+    fig.canvas.mpl_connect('key_press_event', process_key)
+    print("Plotting volume, navigate:" \
+            "\naxial with 'j', 'k'" \
+            "\ncoronal with 'u', 'i'" \
+            "\nsaggital with 'h', 'l'")
+    plt.show()
 
 
 class ResizeGray:
@@ -136,47 +139,30 @@ class ResizeGray:
         return out
 
 
-def nii_loader(path: str, size: int = None, view : str = "axial"):
-    """Load a neuroimaging file with nibabel
+def nii_loader(path: str, size: int = None, dtype : str = "float32"):
+    """Load a neuroimaging file with nibabel, [w, h, slices]
     https://nipy.org/nibabel/reference/nibabel.html
 
     Args:
         path (str): Path to nii file
         size (int): Optional. Output size for h and w. Only supports rectangles
         view (str): Optional. One of "axial", "coronal", or "saggital"
+        dtype (str): Numpy datatype
 
     Returns:
         volume (torch.Tensor): Of shape [1, slices, h, w]
     """
     # Load file
     data = nib.load(path, keep_file_open=False)
-    volume = data.get_fdata(caching='unchanged', dtype=np.float32)
+    volume = data.get_fdata(caching='unchanged', dtype=np.dtype(dtype))
 
     # Squeeze optional 4th dimension
     if volume.ndim == 4:
         volume = volume.squeeze(-1)
 
-    # Convert to tensor
-    volume = torch.from_numpy(volume)
-
-    # Flip directions
-    volume = torch.flip(volume, [2, 1, 0])
-
-    # Select viewing direction
-    if view == "axial":
-        volume = volume.permute(2, 1, 0)
-    elif view == "coronal":
-        volume = volume.permute(1, 2, 0)
-    elif view == "saggital":
-        volume = volume.transpose(1, 2)
-    else:
-        raise NotImplementedError
-
-    volume = volume.unsqueeze(0)
-
     # Resize if size is given
     if size is not None:
-        volume = ResizeGray(size)(volume)
+        volume = resize(volume, [volume.shape[0], size, size])
 
     return volume
 
@@ -184,5 +170,4 @@ def nii_loader(path: str, size: int = None, view : str = "axial"):
 if __name__ == '__main__':
     path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
     volume = nii_loader(path)
-
-    VolumeViewer().plot(volume)
+    volume_viewer(volume)
