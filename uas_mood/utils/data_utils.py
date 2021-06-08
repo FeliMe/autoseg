@@ -94,8 +94,7 @@ def volume_viewer(volume):
     volume = prepare_volume(volume)
 
     # Volume shape [slices, h, w]
-    # fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    fig, ax = plt.subplots(1, 3, figsize=(8, 3))
+    fig, ax = plt.subplots(1, 3, figsize=(12, 4))
     plot_ax(ax[0], volume, "axial")  # axial [slices, h, w]
     plot_ax(ax[1], volume.permute(1, 0, 2), "coronal")  # saggital [h, slices, w]
     plot_ax(ax[2], volume.permute(2, 0, 1), "saggital")  # coronal [w, slices, h]
@@ -139,22 +138,24 @@ class ResizeGray:
         return out
 
 
-def nii_loader(path: str, size: int = None, dtype : str = "float32"):
+def load_nii(path: str, size: int = None, dtype : str = "float32"):
     """Load a neuroimaging file with nibabel, [w, h, slices]
     https://nipy.org/nibabel/reference/nibabel.html
 
     Args:
         path (str): Path to nii file
         size (int): Optional. Output size for h and w. Only supports rectangles
-        view (str): Optional. One of "axial", "coronal", or "saggital"
         dtype (str): Numpy datatype
 
     Returns:
-        volume (torch.Tensor): Of shape [1, slices, h, w]
+        volume (np.ndarray): Of shape [w, h, slices]
+        affine (np.ndarray): Affine coordinates (rotation and translation),
+                             shape [4, 4]
     """
     # Load file
     data = nib.load(path, keep_file_open=False)
     volume = data.get_fdata(caching='unchanged', dtype=np.dtype(dtype))
+    affine = data.affine
 
     # Squeeze optional 4th dimension
     if volume.ndim == 4:
@@ -164,10 +165,14 @@ def nii_loader(path: str, size: int = None, dtype : str = "float32"):
     if size is not None:
         volume = resize(volume, [volume.shape[0], size, size])
 
-    return volume
+    return volume, affine
+
+
+def save_nii(path: str, volume: np.ndarray, affine: np.ndarray, dtype: str = "float32"):
+    nib.save(nib.Nifti1Image(volume.astype(dtype), affine), path)
 
 
 if __name__ == '__main__':
     path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
-    volume = nii_loader(path)
+    volume, affine = load_nii(path)
     volume_viewer(volume)

@@ -1,10 +1,12 @@
+import numpy as np
 import os
 import shutil
 
 from collections import defaultdict
 from glob import glob
+from tqdm import tqdm
 
-from uas_mood.utils.data_utils import nii_loader
+from uas_mood.utils.data_utils import load_nii, save_nii
 from uas_mood.utils.artificial_anomalies import create_random_anomaly
 
 """ Global variables """
@@ -126,25 +128,40 @@ def split_ds(root):
 def create_test_anomalies(root):
     counts = defaultdict(int)
     files = sorted(glob(f"{root}/?????.nii.gz"))
+    n_files = len(files)
 
-    for f in files:
-        volume = nii_loader(f, dtype="float64")
-        anomaly, anomaly_type = create_random_anomaly(volume)
-        target = f"{f.split('.nii.gz')[0]}_{anomaly_type}.nii.gz"
+    pbar = tqdm(files)
+    for f in pbar:
+        # Load volume
+        volume, affine = load_nii(f, dtype="float64")
+        # Create anomaly
+        anomaly, segmentation, anomaly_type = create_random_anomaly(volume)
+        # Update statistics
+        pbar.set_description(anomaly_type)
         counts[anomaly_type] += 1
-        import IPython ; IPython.embed() ; exit(1)
         # Save
+        target = f"{f.split('.nii.gz')[0]}_{anomaly_type}.nii.gz"
+        seg_target = f"{f.split('.nii.gz')[0]}_{anomaly_type}_segmentation.nii.gz"
+        save_nii(target, anomaly, affine, dtype= "float32")
+        save_nii(seg_target, segmentation, affine, dtype= "short")
 
+    for k, v in counts.items():
+        print(f"{k}: absolute {v}, relative {v / n_files:.3f}")
 
 
 if __name__ == '__main__':
+    np.random.seed(0)
     # Check if data is correctly downloaded
     # sanity_check()
     # print("Splitting abdom files")
     # split_ds(ABDOMROOT)
     # print("Splitting brain files")
     # split_ds(BRAINROOT)
-    print("Creating artificial anomalies for val")
-    create_test_anomalies(os.path.join(BRAINROOT, "val"))
-    print("Creating artificial anomalies for test")
-    create_test_anomalies(os.path.join(BRAINROOT, "test"))
+    # print("Creating artificial anomalies for brain val")
+    # create_test_anomalies(os.path.join(BRAINROOT, "val"))
+    # print("Creating artificial anomalies for brain test")
+    # create_test_anomalies(os.path.join(BRAINROOT, "test"))
+    print("Creating artificial anomalies for abdomen val")
+    create_test_anomalies(os.path.join(ABDOMROOT, "val"))
+    print("Creating artificial anomalies for abdomen test")
+    create_test_anomalies(os.path.join(ABDOMROOT, "test"))

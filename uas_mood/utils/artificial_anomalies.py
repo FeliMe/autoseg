@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from uas_mood.utils.data_utils import nii_loader, volume_viewer
+from uas_mood.utils.data_utils import load_nii, volume_viewer
 
 
 def create_sphere(radius, position, size):
@@ -26,7 +26,7 @@ def create_sphere(radius, position, size):
     return sphere
 
 
-def uniform_addition_anomaly(volume, mask, mu=0., std=0.1):
+def uniform_addition_anomaly(volume, mask, mu=0.0, std=0.3):
     """Adds uniform noise sampled from a normal distribution with mu and std
     to a volume at mask and only at pixels where the object is
 
@@ -42,12 +42,13 @@ def uniform_addition_anomaly(volume, mask, mu=0., std=0.1):
     intensity = np.random.normal(mu, std)
     obj_mask = np.zeros_like(volume)
     obj_mask[volume > 0] = 1  # TODO: Change to convex hull
+    mask = obj_mask * mask
 
     # Apply anomaly
-    volume += intensity * mask * obj_mask
+    volume += intensity * mask
     volume = np.clip(volume, 0., 1.)
 
-    return volume
+    return volume, mask
 
 
 def noise_addition_anomaly(volume, mask, mu=0., std=0.1):
@@ -61,10 +62,9 @@ def noise_addition_anomaly(volume, mask, mu=0., std=0.1):
         std (float): Standard deviation of intensity
     """
 
-    assert isinstance(volume, np.ndarray) or isinstance(volume, torch.Tensor)
-
     obj_mask = np.zeros_like(volume)
     obj_mask[volume > 0] = 1  # TODO: Change to convex hull
+    mask = obj_mask * mask
 
     noise_mask = np.zeros_like(volume)
     intensities = np.random.normal(mu, std, size=np.count_nonzero(mask))
@@ -73,10 +73,11 @@ def noise_addition_anomaly(volume, mask, mu=0., std=0.1):
         # noise_mask[..., x, y, z] = intensities[i]
         noise_mask[x, y, z] = intensities[i]
 
-    volume += noise_mask * obj_mask
+    # volume += noise_mask * obj_mask
+    volume += noise_mask
     volume = np.clip(volume, 0., 1.)
 
-    return volume
+    return volume, mask
 
 
 def sink_deformation_anomaly(volume, mask, center, radius):
@@ -87,24 +88,37 @@ def sink_deformation_anomaly(volume, mask, center, radius):
         mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
         center (list of length 3): Center pixel of the mask
     """
+
+    obj_mask = np.zeros_like(volume)
+    obj_mask[volume > 0] = 1  # TODO: Change to convex hull
+    mask = obj_mask * mask
+
     # Center voxel of deformation
     C = np.array(center)
+
     # Create copy of volume for reference
     copy = volume.copy()
+
     # Iterate over indices of all voxels in mask
     inds = np.where(mask > 0)
-    for z, y, x in zip(*inds[-3:]):
+    for x, y, z in zip(*inds[-3:]):
         # Voxel at current location
-        I = np.array([z, y, x])
+        I = np.array([x, y, z])
 
         # Sink pixel shift
         s = np.square(np.linalg.norm(I - C, ord=2) / radius)
         V = np.round(I + (1 - s) * (I - C)).astype(np.int)
-        z_, y_, x_ = V
-        if volume[..., z, y, x] > 0:
-            volume[..., z, y, x] = copy[..., z_, y_, x_]
+        x_, y_, z_ = V
 
-    return volume
+        # Assure that z_, y_ and x_ are valid indices
+        x_ = max(min(x_, volume.shape[-3] - 1), 0)
+        y_ = max(min(y_, volume.shape[-2] - 1), 0)
+        z_ = max(min(z_, volume.shape[-1] - 1), 0)
+
+        if volume[..., x, y, z] > 0:
+            volume[..., x, y, z] = copy[..., x_, y_, z_]
+
+    return volume, mask
 
 
 def source_deformation_anomaly(volume, mask, center, radius):
@@ -115,24 +129,37 @@ def source_deformation_anomaly(volume, mask, center, radius):
         mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
         center (list of length 3): Center pixel of the mask
     """
+
+    obj_mask = np.zeros_like(volume)
+    obj_mask[volume > 0] = 1  # TODO: Change to convex hull
+    mask = obj_mask * mask
+
     # Center voxel of deformation
     C = np.array(center)
+
     # Create copy of volume for reference
     copy = volume.copy()
+
     # Iterate over indices of all voxels in mask
     inds = np.where(mask > 0)
-    for z, y, x in zip(*inds[-3:]):
+    for x, y, z in zip(*inds[-3:]):
         # Voxel at current location
-        I = np.array([z, y, x])
+        I = np.array([x, y, z])
 
         # Source pixel shift
         s = np.square(np.linalg.norm(I - C, ord=2) / radius)
         V = np.round(C + s * (I - C)).astype(np.int)
-        z_, y_, x_ = V
-        if volume[..., z, y, x] > 0:
-            volume[..., z, y, x] = copy[..., z_, y_, x_]
+        x_, y_, z_ = V
 
-    return volume
+        # Assure that z_, y_ and x_ are valid indices
+        x_ = max(min(x_, volume.shape[-1] - 1), 0)
+        y_ = max(min(y_, volume.shape[-2] - 1), 0)
+        z_ = max(min(z_, volume.shape[-3] - 1), 0)
+
+        if volume[..., x, y, z] > 0:
+            volume[..., x, y, z] = copy[..., x_, y_, z_]
+
+    return volume, mask
 
 
 def uniform_shift_anomaly(volume, mask):
@@ -144,8 +171,6 @@ def uniform_shift_anomaly(volume, mask):
         mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
     """
 
-    assert isinstance(volume, np.ndarray) or isinstance(volume, torch.Tensor)
-
     def shift_volume(volume, x, y, z):
         """Shifts a volume by x, y, and z. Only small shifts are supported"""
         shifted = np.roll(volume, shift=x, axis=-1)
@@ -155,6 +180,10 @@ def uniform_shift_anomaly(volume, mask):
 
     def rand_sign():
         return 1 if np.random.random() < 0.5 else -1
+
+    obj_mask = np.zeros_like(volume)
+    obj_mask[volume > 0] = 1  # TODO: Change to convex hull
+    mask = obj_mask * mask
 
     # Create shift parameters
     c, h, w = volume.shape[-3:]
@@ -168,7 +197,7 @@ def uniform_shift_anomaly(volume, mask):
     # Create anomaly at mask
     volume[mask > 0] = shifted[mask > 0]
 
-    return volume
+    return volume, mask
 
 
 def reflection_anomaly(volume, mask):
@@ -179,11 +208,18 @@ def reflection_anomaly(volume, mask):
         volume (np.array): Scan to be augmented, shape [..., slices, h, w]
         mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
     """
+
+    obj_mask = np.zeros_like(volume)
+    obj_mask[volume > 0] = 1  # TODO: Change to convex hull
+    mask = obj_mask * mask
+
     # Create a reflection by flipping along the width axis
-    reflection = np.flip(volume, axis=-1)
+    reflection = np.flip(volume, axis=0)
+
     # Create anomaly at mask
     volume[mask > 0] = reflection[mask > 0]
-    return volume
+
+    return volume, mask
 
 
 def sample_location(volume):
@@ -200,11 +236,12 @@ def create_random_anomaly(volume, verbose=False):
     assert volume.ndim == 3
     # Sample random center position inside the anatomy
     center = sample_location(volume)
-    center = [128, 150, 150]
 
     # Select a radius at random
-    radius = np.random.randint(5, 40)
-    radius = 40
+    if volume.shape[0] == 256:  # brain
+        radius = np.random.randint(5, 35)
+    else:  # abdomen
+        radius = np.random.randint(10, 70)
 
     # Create sphere with samples radius and location
     sphere = create_sphere(radius, center, list(volume.shape))
@@ -218,27 +255,26 @@ def create_random_anomaly(volume, verbose=False):
         "uniform_shift",
         "reflection"
     ]
-    anomaly = np.random.choice(anomalies)
-    anomaly = "uniform_addition"
+    anomaly_type = np.random.choice(anomalies)
 
     if verbose:
-        print(f"{anomaly} at center {center} with radius {radius}")
+        print(f"{anomaly_type} at center {center} with radius {radius}")
 
     # Create anomaly
-    if anomaly == "uniform_addition":
-        res = uniform_addition_anomaly(volume, sphere, mu=0.0, std=0.1)
-    elif anomaly == "noise_addition":
-        res = noise_addition_anomaly(volume, sphere, mu=0.0, std=0.1)
-    elif anomaly == "sink_deformation":
-        res = sink_deformation_anomaly(volume, sphere, center, radius)
-    elif anomaly == "source_deformation":
-        res = source_deformation_anomaly(volume, sphere, center, radius)
-    elif anomaly == "uniform_shift":
-        res = uniform_shift_anomaly(volume, sphere)
+    if anomaly_type == "uniform_addition":
+        res, segmentation = uniform_addition_anomaly(volume, sphere, mu=0.0, std=0.3)
+    elif anomaly_type == "noise_addition":
+        res, segmentation = noise_addition_anomaly(volume, sphere, mu=0.0, std=0.2)
+    elif anomaly_type == "sink_deformation":
+        res, segmentation = sink_deformation_anomaly(volume, sphere, center, radius)
+    elif anomaly_type == "source_deformation":
+        res, segmentation = source_deformation_anomaly(volume, sphere, center, radius)
+    elif anomaly_type == "uniform_shift":
+        res, segmentation = uniform_shift_anomaly(volume, sphere)
     else:
-        res = reflection_anomaly(volume, sphere)
+        res, segmentation = reflection_anomaly(volume, sphere)
 
-    return res, anomaly
+    return res, segmentation, anomaly_type
 
 
 if __name__ == "__main__":
@@ -247,8 +283,11 @@ if __name__ == "__main__":
 
     # Load a sample
     path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
-    volume = nii_loader(path)
+    volume, affine = load_nii(path)
+    print(volume.min(), volume.max(), volume.mean())
 
-    anomal_sample, _ = create_random_anomaly(volume, verbose=True)
+    anomal_sample, segmentation, _ = create_random_anomaly(volume, verbose=True)
+    print(anomal_sample.min(), anomal_sample.max(), anomal_sample.mean())
+    print("Visualizing")
     volume_viewer(anomal_sample)
     import IPython ; IPython.embed() ; exit(1)
