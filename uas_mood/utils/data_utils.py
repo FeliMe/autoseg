@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
+from skimage.exposure import equalize_hist
 from skimage.transform import resize
 import torch
 import torch.nn.functional as F
@@ -106,38 +107,6 @@ def volume_viewer(volume):
     plt.show()
 
 
-class ResizeGray:
-    def __init__(self, size, mode='nearest', align_corners=None):
-        """Resample a tensor of shape [c, slices, h, w], or [c, h, w] to size
-        Arguments are the same as in torch.nn.functional.interpolate, but we
-        don't need a batch- or channel dimension here.
-        The datatype can only be preserved when using nearest neighbor.
-
-        Example:
-        volume = torch.randn(1, 189, 197, 197)
-        out = ResizeGray()(volume, size=[189, 120, 120])
-        out.shape = [1, 189, 120, 120]
-        out.dtype = volume.dtype if mode == 'nearest' else torch.float32
-        """
-        if isinstance(size, int):
-            size = [size, size]
-        assert len(size) == 2
-
-        self.size = size
-        self.mode = mode
-        self.align_corners = align_corners
-
-    def __call__(self, volume):
-        dtype = volume.dtype
-        out = F.interpolate(volume[None].float(),
-                            size=[volume.shape[-3]] + self.size,
-                            mode=self.mode,
-                            align_corners=self.align_corners)[0]
-        if self.mode == 'nearest':
-            out = out.type(dtype)
-        return out
-
-
 def load_nii(path: str, size: int = None, dtype : str = "float32"):
     """Load a neuroimaging file with nibabel, [w, h, slices]
     https://nipy.org/nibabel/reference/nibabel.html
@@ -172,7 +141,84 @@ def save_nii(path: str, volume: np.ndarray, affine: np.ndarray, dtype: str = "fl
     nib.save(nib.Nifti1Image(volume.astype(dtype), affine), path)
 
 
+def histogram_equalization(volume):
+    # Create equalization mask
+    mask = np.zeros_like(volume)
+    mask[volume > 0] = 1
+
+    # Equalize
+    dtype = volume.dtype
+    volume = equalize_hist(volume, nbins=256, mask=mask).astype(dtype)
+
+    # Assure that background still is 0
+    volume *= mask
+
+    return volume
+
+
+def process_scan(path : str, size : int = None, equalize_hist : bool = True,
+                 slices_lower_upper = None):
+    """Load and pre-process a medical 3D scan
+
+    Args:
+        path (str): Path to file
+        size (int): Optional, spatial dimension (height / width)
+        equalize_hist (bool): Perform histogram equalization
+        slices_lower_upper (tuple or list of ints and length 2):
+            upper and lower index for slices
+
+    Returns:
+        volume (torch.Tensor): Loaded and pre-processed scan
+    """
+
+    # Load
+    volume, _ = load_nii(path=path, size=size, dtype="float32")
+
+    # Select slices
+    if slices_lower_upper is not None:
+        volume = volume[..., slice(*slices_lower_upper)]
+
+    # Pre-processing
+    if equalize_hist:
+        volume = histogram_equalization(volume)
+
+    volume = torch.from_numpy(volume)
+
+    # convert from [w, h, slices] to [slices, w, h]
+    volume = volume.permute(2, 0, 1)
+
+    return volume
+
+
+def load_segmentation(path : str, size : int = None, bin_threshold : float = 0.4,
+                      slices_lower_upper = None):
+    """Load a segmentation file
+
+    Args:
+        path (str): Path to file
+        size (int): Optional, spatial dimension (height / width)
+        bin_threshold (float): Optional, threshold at which a pixel belongs to
+                               the segmentation
+    """
+
+    # Load
+    segmentation, _ = load_nii(path, size=size, dtype='float32')
+    segmentation = torch.from_numpy(segmentation)
+
+    # Select slices
+    if slices_lower_upper is not None:
+        segmentation = segmentation[..., slice(*slices_lower_upper)]
+
+    # Binarize
+    segmentation = torch.where(segmentation > bin_threshold, 1, 0).short()
+
+    # convert from [w, h, slices] to [slices, w, h]
+    segmentation = segmentation.permute(2, 0, 1)
+
+    return segmentation
+
+
 if __name__ == '__main__':
     path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
-    volume, affine = load_nii(path)
+    volume = process_scan(path, slices_lower_upper=[35, 226])
     volume_viewer(volume)
