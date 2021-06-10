@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 
-def volume_viewer(volume):
+def volume_viewer(volume, slices_first=False):
     """Plot a volume of shape [x, y, slices]
     Useful for MR and CT image volumes
 
@@ -55,7 +55,7 @@ def volume_viewer(volume):
             next_slice(fig.axes[2])
         fig.canvas.draw()
 
-    def prepare_volume(volume):
+    def prepare_volume(volume, slices_first):
         # Convert to torch
         if isinstance(volume, np.ndarray):
             try:
@@ -66,6 +66,10 @@ def volume_viewer(volume):
         # Omit batch dimension
         if volume.ndim == 4:
             volume = volume[0]
+
+        # If first dimension is slices, put it last
+        if slices_first:
+            volume = volume.permute(1, 2, 0)
 
         # Pad slices
         if volume.shape[0] < volume.shape[1]:
@@ -92,7 +96,7 @@ def volume_viewer(volume):
 
     remove_keymap_conflicts({'h', 'j', 'k', 'l'})
 
-    volume = prepare_volume(volume)
+    volume = prepare_volume(volume, slices_first)
 
     # Volume shape [slices, h, w]
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
@@ -132,13 +136,13 @@ def load_nii(path: str, size: int = None, dtype : str = "float32"):
 
     # Resize if size is given
     if size is not None:
-        volume = resize(volume, [volume.shape[0], size, size])
+        volume = resize(volume, [size, size, volume.shape[0]])
 
     return volume, affine
 
 
 def save_nii(path: str, volume: np.ndarray, affine: np.ndarray, dtype: str = "float32"):
-    nib.save(nib.Nifti1Image(volume.astype(dtype), affine), path)
+    nib.save(nib.nifti1image(volume.astype(dtype), affine), path)
 
 
 def histogram_equalization(volume):
@@ -219,6 +223,7 @@ def load_segmentation(path : str, size : int = None, bin_threshold : float = 0.4
 
 
 if __name__ == '__main__':
-    path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
-    volume = process_scan(path, slices_lower_upper=[35, 226])
-    volume_viewer(volume)
+    path = "/home/felix/datasets/MOOD/brain/train/00413.nii.gz"
+    volume = process_scan(path, size=128, slices_lower_upper=[23, 200])
+    print(volume.shape)
+    volume_viewer(volume, slices_first=True)

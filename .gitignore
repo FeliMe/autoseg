@@ -8,6 +8,7 @@ __pycache__/
 
 # Single directories
 /uas_mood.egg-info/
+/uas_mood/logs/
 
 # Recursive directories
 .ipynb_checkpoints/

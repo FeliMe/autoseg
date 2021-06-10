@@ -56,7 +56,8 @@ class TrainDataset(PreloadDataset):
         samples = []
         for f in files:
             # Samples are shape [width, height, slices]
-            samples.append(process_scan(f, img_size, slices_lower_upper))
+            samples.append(process_scan(f, img_size, equalize_hist=True,
+                                        slices_lower_upper=slices_lower_upper))
 
         return samples
 
@@ -65,6 +66,7 @@ class TrainDataset(PreloadDataset):
         sample = self.samples[idx]
         # Add fake channels dimension
         sample = sample.unsqueeze(0)
+        # Free memory if only one epoch is performed
         return sample
     
 

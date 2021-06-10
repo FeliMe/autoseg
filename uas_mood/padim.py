@@ -5,6 +5,7 @@ for Anomaly Detection and Localization"
 https://arxiv.org/pdf/2011.08785.pdf
 """
 import argparse
+import gc
 import os
 from time import time
 
@@ -14,9 +15,11 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.data.sampler import SequentialSampler
 from tqdm import tqdm
 
 import uas_mood.models.feature_extractor as feature
+from uas_mood.utils.data_utils import volume_viewer
 from uas_mood.utils.dataset import (
     MOODROOT,
     TestDataset,
@@ -26,58 +29,84 @@ from uas_mood.utils.dataset import (
 )
 
 
-def train(args, extractor, train_files):
-    print("TRAINING")
+def partial_train(args, loader, extractor, slices):
+    """Compute mean and covariance for a range of slices
+
+    Args:
+        loader (torch.utils.data.DataLoader): Must be a sequential loader 
+                                              without shuffling
+        extractor (nn.Module): Feature extractor for the single slices
+        slices (slice): slice range
+
+    Returns:
+        mu (torch.Tensor): mean per voxel
+        cov_inv (torch.Tensor): Inverse of the covariance matrices per voxel
+    """
+    assert not loader.drop_last
+    assert isinstance(loader.sampler, SequentialSampler)
+
     feats = []
-    print("Loading data")
-    t_start = time()
-    ds = TrainDataset(train_files, args.img_size, args.slices_lower_upper)
-    loader = DataLoader(ds, batch_size=args.n_slices, num_workers=8)
-    print(f"Finished loading data in {time() - t_start:.2f}s")
-    for sample in tqdm(loader):
-        import IPython ; IPython.embed() ; exit(1)
+    for sample in loader:
         with torch.no_grad():
-            # Processing all slices is not feasible, therefore split them
-            batches = sample.split(args.batch_size, dim=0)
-            feat_batch = []
-            for x in batches:
-                # x are [batch, 1, w, h]
-                x = x.to(args.device)
-                # feats are [batch, f, w, h]
-                feat = extractor(x).cpu()
-                feat_batch.append(feat)
+            # Samples are [slices, 1, w, h]
+            sample = sample[slices].to(args.device)
+            # Feats are [slices, f, w, h]
+            feat = extractor(sample).cpu()
+            # Convert to [f, slices, w, h]
+            feat = feat.transpose(0, 1)
+            feats.append(feat)
 
-            # Concatenate to [slices, f, w, h]
-            feat_batch = torch.cat(feat_batch, dim=0)
-            # Get features first
-            feat_batch = feat_batch.transpose(0, 1)
-        feats.append(feat_batch)
-
-    # Stack to [n, slices, f, w, h]
+    # Stack to [n, f, slices, w, h]
     feats = torch.stack(feats, dim=0)
-    n, f, slices, h, w = feats.shape
-    d = slices * h * w
+
+    n, f, n_slices, w, h = feats.shape
+    d = n_slices * w * h
     feats = feats.reshape(n, f, d)
 
-    # Compute feature statistics for every slice and patch
-    print("Computing mean")
-    mu = feats.mean(dim=0).T  # [d, f]
+    # Compute mean
+    mu = feats.mean(dim=0).T.half()  # [d, f]
 
     # Covariance
     feats = feats.numpy()
     feats = np.transpose(feats, (2, 0, 1))  # [d, n, f]
-    print("Computing cov")
     cov = [np.cov(feat, rowvar=False) + (args.eps * np.eye(f))
            for feat in feats]  # [d, f, f]
-    print("Inverting cov")
+
+    # Inverting covariance
     cov_inv = [np.linalg.inv(c) for c in cov]  # [d, f, f]
     cov_inv = np.stack(cov_inv, axis=0)  # [d, f, f]
-    cov_inv = torch.from_numpy(cov_inv)  # [d, f, f]
-    cov = np.stack(cov, axis=0)  # [d, f, f]
-    cov = torch.from_numpy(cov)  # [d, f, f]
+    cov_inv = torch.from_numpy(cov_inv).half()  # [d, f, f]
+    # cov = np.stack(cov, axis=0)  # [d, f, f]
+    # cov = torch.from_numpy(cov)  # [d, f, f]
+
+    # Reshape mu back to [slices, w, h, f]
+    mu = mu.reshape(n_slices, w, h, f)
+    # Reshape cov_inv back to [slices, w, h, f, f]
+    cov_inv = cov_inv.reshape(n_slices, w, h, f, f)
+
+    return mu, cov_inv
+
+
+def train(args, extractor, train_files):
+    print("TRAINING")
+    t_start = time()
+    print("Loading data")
+    ds = TrainDataset(train_files, args.img_size, args.slices_lower_upper)
+    loader = DataLoader(ds, batch_size=args.n_slices, num_workers=0)
+    print(f"Finished loading data in {time() - t_start:.2f}s")
+    mu, cov_inv = [], []
+    for lower in tqdm(range(0, args.n_slices, args.n_slices_batch)):
+        upper = lower + args.n_slices_batch
+        slices = slice(lower, upper)
+        mu_slice, cov_inv_slice = partial_train(args, loader, extractor, slices)
+        mu.append(mu_slice)
+        cov_inv.append(cov_inv_slice)
+
+    mu = torch.cat(mu, dim=0)
+    cov_inv = torch.cat(cov_inv, dim=0)
 
     # Save results
-    results = {'mu': mu, 'cov': cov, 'cov_inv': cov_inv.float()}
+    results = {'mu': mu, 'cov_inv': cov_inv}
     os.makedirs(args.save_dir, exist_ok=True)
     print(f"Saving parameters to {args.save_path}")
     torch.save(results, args.save_path)
@@ -172,12 +201,13 @@ if __name__ == '__main__':
     parser.add_argument("--no_train", dest="train", action="store_false")
     parser.add_argument("--no_test", dest="test", action="store_false")
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--n_slices_batch", type=int, default=4)
     # Data params
     parser.add_argument("--img_size", type=int, default=128)
     parser.add_argument("--ds", type=str, default="brain",
                         choices=["brain", "abdom"])
     parser.add_argument('--slices_lower_upper',
-                         nargs='+', type=int, default=[35, 226])
+                         nargs='+', type=int, default=[23, 200])
     # Feature extractor params
     parser.add_argument("--backbone", type=str, default="resnet18",
                         choices=feature.Extractor.BACKBONENETS)
@@ -198,7 +228,8 @@ if __name__ == '__main__':
     args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Save path
-    args.save_dir = f"{args.save_dir}{args.ds}_{args.backbone}_{args.img_size}"
+    args.save_dir = f"{args.save_dir}{args.ds}_{args.backbone}_{args.img_size}" \
+                    f"_{args.slices_lower_upper[0]}-{args.slices_lower_upper[1]}"
     args.save_path = f"{args.save_dir}results.pt"
 
     # Save number of slices per sample as a parameters
@@ -215,7 +246,7 @@ if __name__ == '__main__':
         img_size=args.img_size,
         upsample="nearest",
         featmap_size=args.img_size,
-        keep_feature_prop=(200 / 448)
+        keep_feature_prop=(100 / 448)
     ).to(args.device)
 
     if args.train:
