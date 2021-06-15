@@ -2,41 +2,46 @@ import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
+from torchvision.utils import make_grid
 from skimage import measure
 from sklearn.metrics import (
     auc,
     average_precision_score,
-    precision_recall_curve,
     roc_auc_score,
     roc_curve,
 )
 import torch
 from tqdm import tqdm
+from uas_mood.utils import utils
 
 
-def connected_components_3d(volume):
-    is_batch = True
-    is_torch = torch.is_tensor(volume)
-    if is_torch:
-        volume = volume.numpy()
-    if volume.ndim == 3:
-        volume = volume.unsqueeze(0)
-        is_batch = False
 
-    # shape [b, slices, w, h], treat every sample in batch independently
-    pbar = tqdm(range(len(volume)), desc="Connected components")
-    for i in pbar:
-        cc_volume = measure.label(volume[i], connectivity=3)
-        props = measure.regionprops(cc_volume)
-        for prop in props:
-            if prop['filled_area'] <= 20:
-                volume[i, cc_volume == prop['label']] = 0
+def plot_results(images: list, titles: list, n_images=20):
+    """Returns a plot containing the input images, reconstructed images,
+    uncertainty maps and anomaly maps"""
 
-    if not is_batch:
-        volume = volume.squeeze(0)
-    if is_torch:
-        volume = torch.from_numpy(volume)
-    return volume
+    if len(images) != len(titles):
+        raise RuntimeError("not the same number of images and titles")
+
+    # Stack tensors to image grid and transform to numpy for plotting
+    img_dict = {}
+    for img, title in zip(images, titles):
+        img_grid = make_grid(
+            img[:n_images].float(), nrow=1, normalize=True, scale_each=True)
+        img_grid = utils.torch2np_img(img_grid)
+        img_dict[title] = img_grid
+
+    n = len(images)
+
+    # Construct matplotlib figure
+    fig = plt.figure(figsize=(3 * n, 1.0 * n_images))
+    plt.axis('off')
+    for i, key in enumerate(img_dict.keys()):
+        a = fig.add_subplot(1, n, i + 1)
+        plt.imshow(img_dict[key])
+        a.set_title(key)
+
+    return fig
 
 
 def plot_roc(fpr, tpr, auroc, title=""):
@@ -130,7 +135,7 @@ def compute_best_dice(preds, targets, n_thresh=100):
 
     # Get best dice once again after connected component analysis
     bin_preds = torch.where(preds > max_thresh, 1., 0.)
-    bin_preds = connected_components_3d(bin_preds)
+    bin_preds = utils.connected_components_3d(bin_preds)
     max_dice = compute_dice(bin_preds, targets)
     return max_dice, max_thresh
 
@@ -141,7 +146,7 @@ def compute_dice_fpr(preds, targets, max_fprs=[0.01, 0.05, 0.1]):
     for max_fpr in max_fprs:
         th = thresholds[fprs < max_fpr][-1]
         bin_preds = torch.where(preds > th, 1., 0.)
-        bin_preds = connected_components_3d(bin_preds)
+        bin_preds = utils.connected_components_3d(bin_preds)
         dice = compute_dice(bin_preds, targets)
         dices.append(dice)
         print(f"DICE{int(max_fpr * 100)}: {dice:.4f}, threshold: {th:.4f}")
@@ -272,20 +277,6 @@ def compute_pro_auc(predictions, targets, expect_fpr=0.3, max_steps=300):
     return pro_auc_score, best_miou
 
 
-def compute_aupr(predictions, targets):
-    """Compute the area under the precision-recall curve
-
-    Args:
-        predictions (torch.tensor): Anomaly scores
-        targets (torch.tensor): Segmentation map, must be binary
-    """
-    if (targets - targets.int()).sum() > 0.:
-        raise RuntimeError("targets for AUPR must be binary")
-    precision, recall, _ = precision_recall_curve(targets.view(-1), predictions.view(-1))
-    aupr = auc(recall, precision)
-    return aupr
-
-
 def compute_average_precision(predictions, targets):
     """Compute Average Precision
 
@@ -299,7 +290,7 @@ def compute_average_precision(predictions, targets):
     return ap
 
 
-def evaluate(predictions, targets, auroc=True, auprc=True, ap=True, dice=True,
+def evaluate(predictions, targets, auroc=True, ap=True, dice=True,
              proauc=True, n_thresh_dice=100):
     if auroc:
         auroc = compute_auroc(predictions, targets)
@@ -307,15 +298,9 @@ def evaluate(predictions, targets, auroc=True, auprc=True, ap=True, dice=True,
     else:
         auroc = 0.0
 
-    if auprc:
-        auprc = compute_aupr(predictions, targets)
-        print(f"AUPRC: {auprc:.4f}")
-    else:
-        auprc = 0.0
-
     if ap:
         ap = compute_average_precision(predictions, targets)
-        print("fAverage Precision: {ap:.4f}")
+        print(f"Average Precision: {ap:.4f}")
     else:
         ap = 0.0
 
@@ -333,4 +318,4 @@ def evaluate(predictions, targets, auroc=True, auprc=True, ap=True, dice=True,
             targets=targets.view(-1, 1, h, w),
         )
 
-    return auroc, auprc, ap, dice, th
+    return auroc, ap, dice, th

@@ -5,7 +5,7 @@ for Anomaly Detection and Localization"
 https://arxiv.org/pdf/2011.08785.pdf
 """
 import argparse
-import gc
+from collections import defaultdict
 import os
 from time import time
 
@@ -19,6 +19,7 @@ from torch.utils.data.sampler import SequentialSampler
 from tqdm import tqdm
 
 import uas_mood.models.feature_extractor as feature
+from uas_mood.utils import evaluation, utils
 from uas_mood.utils.data_utils import volume_viewer
 from uas_mood.utils.dataset import (
     MOODROOT,
@@ -64,7 +65,8 @@ def partial_train(args, loader, extractor, slices):
     feats = feats.reshape(n, f, d)
 
     # Compute mean
-    mu = feats.mean(dim=0).T.half()  # [d, f]
+    mu = feats.mean(dim=0).T  # [d, f]
+    # mu = mu.half()
 
     # Covariance
     feats = feats.numpy()
@@ -75,9 +77,8 @@ def partial_train(args, loader, extractor, slices):
     # Inverting covariance
     cov_inv = [np.linalg.inv(c) for c in cov]  # [d, f, f]
     cov_inv = np.stack(cov_inv, axis=0)  # [d, f, f]
-    cov_inv = torch.from_numpy(cov_inv).half()  # [d, f, f]
-    # cov = np.stack(cov, axis=0)  # [d, f, f]
-    # cov = torch.from_numpy(cov)  # [d, f, f]
+    cov_inv = torch.from_numpy(cov_inv)  # [d, f, f]
+    # cov_inv = cov_inv.half()
 
     # Reshape mu back to [slices, w, h, f]
     mu = mu.reshape(n_slices, w, h, f)
@@ -102,8 +103,8 @@ def train(args, extractor, train_files):
         mu.append(mu_slice)
         cov_inv.append(cov_inv_slice)
 
-    mu = torch.cat(mu, dim=0)
-    cov_inv = torch.cat(cov_inv, dim=0)
+    mu = torch.cat(mu, dim=0)  # [slice, w, h, f]
+    cov_inv = torch.cat(cov_inv, dim=0)  # [slice, w, h, f, f]
 
     # Save results
     results = {'mu': mu, 'cov_inv': cov_inv}
@@ -116,40 +117,50 @@ def test(args, extractor, test_files):
     print("TESTING")
 
     # Loading results
+    print("Loading mu and cov")
     results = torch.load(args.save_path)
-    mu = results['mu']  # [d, f]
-    cov_inv = results['cov_inv']  # [d, f, f]
+    mu = results['mu']  # [slice, w, h, f]
+    cov_inv = results['cov_inv']  # [slice, w, h, f, f]
+
+    # Reshape mu and cov_inv
+    slices, w, h, f = mu.shape
+    d = slices * w * h
+    mu = mu.reshape(d, f)  # [d, f]
+    cov_inv = cov_inv.reshape(d, f, f)  # [d, f, f]
 
     # Loading data
     print("Loading data")
     t_start = time()
-    ds = TestDataset(test_files, args.img_size)
+    ds = TestDataset(test_files, args.img_size, args.slices_lower_upper)
     print(f"Finished loading data in {time() - t_start:.2f}s")
 
     samples = []
     anomaly_maps = []
     segmentations = []
-    masks = []
+    anomalies = defaultdict(int)
     for batch in tqdm(ds):
-        sample, seg, mask = batch
+        sample, seg = batch
+        name = sample[0]
+        print(name)
+        import IPython ; IPython.embed() ; exit(1)
+        sample = sample[-1]  # sample is tuple (path, volume)
+        seg = seg[-1]  # seg is tuple (path, volume)
 
         with torch.no_grad():
-            sample = sample.transpose(0, 1).to(args.device)
-            feat = extractor(sample).cpu().transpose(0, 1)
+            sample = sample.unsqueeze(1).to(args.device)  # [slices, 1, w, h]
+            feat = extractor(sample).cpu().transpose(0, 1)  # [f, slices, w, h]
 
             # Reshape feature map
-            f, slices, h, w = feat.shape
-            d = slices * h * w
+            f, slices, w, h = feat.shape
+            d = slices * w * h
             feat = feat.reshape(f, d)  # [f, d]
             feat = feat.T  # [d, f]
 
             # Compute anomaly map with mahalanobis distance
-            anomaly_map = [torch.sqrt(((x - m).T @ c_inv @ (x - m)))
+            anomaly_map = [torch.sqrt(((x - m).T @ c_inv.float() @ (x - m)))
                            for x, m, c_inv in zip(feat, mu, cov_inv)]
-            # anomaly_map = [((x - m).T @ c_inv @ (x - m)) + c_logdet
-            #                for x, m, c_inv, c_logdet in zip(feat, mu, cov_inv, cov_logdet)]
             anomaly_map = torch.stack(anomaly_map, dim=0)  # [d, 1]
-            anomaly_map = anomaly_map.reshape(1, slices, h, w)
+            anomaly_map = anomaly_map.reshape(1, slices, w, h)
 
             # Upsample anomaly map
             anomaly_map = F.interpolate(anomaly_map, size=args.img_size,
@@ -159,24 +170,19 @@ def test(args, extractor, test_files):
             blur = utils.GaussianSmoothing(channels=1,
                                            kernel_size=5, sigma=4, dim=3)
             anomaly_map = blur(anomaly_map[None]).squeeze(0)
-            # blur = utils.MedianFilter2d(kernel_size=5)
-            # anomaly_map = blur(anomaly_map)
 
         anomaly_maps.append(anomaly_map)
         segmentations.append(seg)
-        masks.append(mask)
         if len(samples) <= args.n_imgs_log:  # Save some memory
             samples.append(sample.transpose(0, 1).cpu())
 
     anomaly_maps = torch.cat(anomaly_maps, dim=0)
-    segmentations = torch.cat(segmentations, dim=0)
-    masks = torch.cat(masks, dim=0)
+    segmentations = torch.stack(segmentations, dim=0)
     samples = torch.cat(samples, dim=0)
 
     _, _, _, th = evaluation.evaluate(
         predictions=anomaly_maps,
         targets=segmentations,
-        masks=masks
     )
 
     # Binarize anomaly_maps
@@ -191,8 +197,8 @@ def test(args, extractor, test_files):
         segmentations[:, c][:, None]
     ]
     titles = ['Input', 'Anomaly map', 'Binarized map', 'Ground truth']
-    fig = evaluation.plot_results(images, titles, n_images=args.n_imgs_log)
-    plt.savefig(f"{args.save_dir}{args.test_ds}_samples.png")
+    evaluation.plot_results(images, titles, n_images=args.n_imgs_log)
+    plt.savefig(f"{args.save_dir}/samples.png")
 
 
 if __name__ == '__main__':
@@ -206,8 +212,10 @@ if __name__ == '__main__':
     parser.add_argument("--img_size", type=int, default=128)
     parser.add_argument("--ds", type=str, default="brain",
                         choices=["brain", "abdom"])
+    # parser.add_argument('--slices_lower_upper',
+    #                      nargs='+', type=int, default=[23, 200])
     parser.add_argument('--slices_lower_upper',
-                         nargs='+', type=int, default=[23, 200])
+                         nargs='+', type=int, default=[127, 131])
     # Feature extractor params
     parser.add_argument("--backbone", type=str, default="resnet18",
                         choices=feature.Extractor.BACKBONENETS)
@@ -230,14 +238,14 @@ if __name__ == '__main__':
     # Save path
     args.save_dir = f"{args.save_dir}{args.ds}_{args.backbone}_{args.img_size}" \
                     f"_{args.slices_lower_upper[0]}-{args.slices_lower_upper[1]}"
-    args.save_path = f"{args.save_dir}results.pt"
+    args.save_path = f"{args.save_dir}/results.pt"
 
     # Save number of slices per sample as a parameters
     args.n_slices = args.slices_lower_upper[1] - args.slices_lower_upper[0]
 
     # Get train and test paths
-    train_files = get_train_files(MOODROOT, args.ds)[:10]
-    val_files = get_test_files(MOODROOT, args.ds, "val")
+    train_files = get_train_files(MOODROOT, args.ds)
+    test_files = get_test_files(MOODROOT, args.ds)
 
     # Prepare feature extractor
     extractor = feature.Extractor(
@@ -245,12 +253,12 @@ if __name__ == '__main__':
         cnn_layers=args.cnn_layers,
         img_size=args.img_size,
         upsample="nearest",
-        featmap_size=args.img_size,
-        keep_feature_prop=(100 / 448)
+        featmap_size=args.img_size // 4,
+        keep_feature_prop=(200 / 448)
     ).to(args.device)
 
     if args.train:
         train(args, extractor, train_files)
 
     if args.test:
-        test(args, extractor, val_files)
+        test(args, extractor, test_files)

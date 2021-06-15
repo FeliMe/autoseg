@@ -1,19 +1,19 @@
-import numpy as np
-import os
-import shutil
-
 from collections import defaultdict
 from glob import glob
+import os
+import random
+import shutil
+
+import numpy as np
 from tqdm import tqdm
 
-from uas_mood.utils.data_utils import load_nii, save_nii
 from uas_mood.utils.artificial_anomalies import create_random_anomaly
+from uas_mood.utils.data_utils import load_nii, save_nii
 
 """ Global variables """
 
-TRAINFRAC = 0.6
-VALFRAC = 0.3
-TESTFRAC = 0.1
+TRAINFRAC = 0.6  # 60 % of the total files are used for training, 40% for testing
+TESTNORMALFRAC = 0.25  # 25% of test samples don't get artificial anomalies
 
 DATAROOT = os.environ.get('DATAROOT')
 assert DATAROOT is not None, "Set the environment variable DATAROOT to your datasets folder"
@@ -96,11 +96,9 @@ def sanity_check():
 def split_ds(root):
     # Init names
     train_folder = os.path.join(root, "train")
-    val_folder = os.path.join(root, "val")
     test_folder = os.path.join(root, "test")
 
     # Create val- and test-folder
-    os.makedirs(val_folder, exist_ok=True)
     os.makedirs(test_folder, exist_ok=True)
 
     # Get all files
@@ -109,16 +107,9 @@ def split_ds(root):
 
     # Split files
     train_idx = int(n_files * TRAINFRAC)
-    val_idx = train_idx + int(n_files * VALFRAC)
-    val_files = files[train_idx:val_idx]
-    test_files = files[val_idx:]
+    test_files = files[train_idx:]
 
     # Move files to respective directories
-    for src in val_files:
-        dst = os.path.join(val_folder, src.split('/')[-1])
-        shutil.move(src, dst)
-    print(f"Moved {len(val_files)} fo {val_folder}")
-
     for src in test_files:
         dst = os.path.join(test_folder, src.split('/')[-1])
         shutil.move(src, dst)
@@ -130,12 +121,32 @@ def create_test_anomalies(root):
     files = sorted(glob(f"{root}/?????.nii.gz"))
     n_files = len(files)
 
-    pbar = tqdm(files)
+    random.shuffle(files)
+    normal_idx = round(n_files * TESTNORMALFRAC)
+    normal_files = files[:normal_idx]
+    anomal_files = files[normal_idx:]
+
+    # Create files without anomalies
+    print("Creating files without anomalies")
+    for f in tqdm(normal_files):
+        # Load volume
+        volume, affine = load_nii(f, dtype="float64")
+        # Segmentation is all 0
+        segmentation = np.zeros_like(volume)
+        # Save
+        target = f"{f.split('.nii.gz')[0]}_normal.nii.gz"
+        seg_target = f"{f.split('.nii.gz')[0]}_normal_segmentation.nii.gz"
+        save_nii(target, volume, affine, dtype= "float32")
+        save_nii(seg_target, segmentation, affine, dtype= "short")
+
+    # Create files with anomalies
+    print("Creating files with anomalies")
+    pbar = tqdm(anomal_files)
     for f in pbar:
         # Load volume
         volume, affine = load_nii(f, dtype="float64")
         # Create anomaly
-        anomaly, segmentation, anomaly_type = create_random_anomaly(volume)
+        anomaly, segmentation, anomaly_type, _, _ = create_random_anomaly(volume)
         # Update statistics
         pbar.set_description(anomaly_type)
         counts[anomaly_type] += 1
@@ -150,18 +161,16 @@ def create_test_anomalies(root):
 
 
 if __name__ == '__main__':
-    np.random.seed(0)
+    seed = 0
+    random.seed(seed)
+    np.random.seed(seed)
     # Check if data is correctly downloaded
     # sanity_check()
     # print("Splitting abdom files")
     # split_ds(ABDOMROOT)
     # print("Splitting brain files")
     # split_ds(BRAINROOT)
-    # print("Creating artificial anomalies for brain val")
-    # create_test_anomalies(os.path.join(BRAINROOT, "val"))
     # print("Creating artificial anomalies for brain test")
     # create_test_anomalies(os.path.join(BRAINROOT, "test"))
-    print("Creating artificial anomalies for abdomen val")
-    create_test_anomalies(os.path.join(ABDOMROOT, "val"))
     print("Creating artificial anomalies for abdomen test")
     create_test_anomalies(os.path.join(ABDOMROOT, "test"))

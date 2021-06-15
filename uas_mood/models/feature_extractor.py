@@ -91,7 +91,7 @@ class Extractor(nn.Module):
         backbone="resnet18",
         cnn_layers=RESNETLAYERS,
         upsample="nearest",
-        featmap_size=256,  # Before convolving
+        featmap_size=64,  # Before convolving
         img_size=256,
         keep_feature_prop=1.0,
     ):

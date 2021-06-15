@@ -7,12 +7,15 @@ import torch
 import torch.nn.functional as F
 
 
-def volume_viewer(volume, slices_first=False):
+def volume_viewer(volume, initial_position=None, slices_first=False):
     """Plot a volume of shape [x, y, slices]
     Useful for MR and CT image volumes
 
     Args:
-        volume (torch.Tensor or np.ndarray): With shape [slices, h, w]"""
+        volume (torch.Tensor or np.ndarray): With shape [slices, h, w]
+        initial_position (list or tuple of len 3): (Optional)
+        slices_first (bool): If slices are first or last dimension in volume
+    """
     
     def remove_keymap_conflicts(new_keys_set):
         for prop in plt.rcParams:
@@ -24,24 +27,26 @@ def volume_viewer(volume, slices_first=False):
 
     def previous_slice(ax):
         volume = ax.volume
-        ax.index = (ax.index - 1) % volume.shape[0]  # wrap around using %
+        d = volume.shape[0]
+        ax.index = (ax.index + 1) % d
         ax.images[0].set_array(volume[ax.index])
         ax.texts.pop()
-        ax.text(5, 15, f"Slice: {ax.index}", color="white")
+        ax.text(5, 15, f"Slice: {d - ax.index}", color="white")
 
     def next_slice(ax):
         volume = ax.volume
-        ax.index = (ax.index + 1) % volume.shape[0]
+        d = volume.shape[0]
+        ax.index = (ax.index - 1) % d
         ax.images[0].set_array(volume[ax.index])
         ax.texts.pop()
-        ax.text(5, 15, f"Slice: {ax.index}", color="white")
+        ax.text(5, 15, f"Slice: {d - ax.index}", color="white")
 
     def process_key(event):
         fig = event.canvas.figure
         # Move axial (slices)
-        if event.key == 'j':
+        if event.key == 'k':
             next_slice(fig.axes[0])
-        elif event.key == 'k':
+        elif event.key == 'j':
             previous_slice(fig.axes[0])
         # Move coronal (h)
         elif event.key == 'u':
@@ -82,14 +87,16 @@ def volume_viewer(volume, slices_first=False):
 
         return volume
 
-    def plot_ax(ax, volume, title):
+    def plot_ax(ax, volume, index, title):
         ax.volume = volume
         shape = ax.volume.shape
-        ax.index = shape[0] // 2
+        d = shape[0]
+        ax.index = d - index
+        # ax.index = index
         aspect = shape[2] / shape[1]
         ax.imshow(ax.volume[ax.index], aspect=aspect)
         ax.set_title(title)
-        ax.text(5, 15, f"Slice: {ax.index}", color="white")
+        ax.text(5, 15, f"Slice: {d - ax.index}", color="white")
 
     plt.rcParams['image.cmap'] = 'gray'
     plt.rcParams['image.interpolation'] = 'nearest'
@@ -98,11 +105,14 @@ def volume_viewer(volume, slices_first=False):
 
     volume = prepare_volume(volume, slices_first)
 
+    if initial_position is None:
+        initial_position = torch.tensor(volume.shape) // 2
+
     # Volume shape [slices, h, w]
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    plot_ax(ax[0], volume, "axial")  # axial [slices, h, w]
-    plot_ax(ax[1], volume.permute(1, 0, 2), "coronal")  # saggital [h, slices, w]
-    plot_ax(ax[2], volume.permute(2, 0, 1), "saggital")  # coronal [w, slices, h]
+    plot_ax(ax[0], volume, initial_position[2], "axial")  # axial [slices, h, w]
+    plot_ax(ax[1], volume.permute(1, 0, 2), initial_position[1], "coronal")  # saggital [h, slices, w]
+    plot_ax(ax[2], volume.permute(2, 0, 1), initial_position[0], "saggital")  # coronal [w, slices, h]
     fig.canvas.mpl_connect('key_press_event', process_key)
     print("Plotting volume, navigate:" \
             "\naxial with 'j', 'k'" \
@@ -142,7 +152,7 @@ def load_nii(path: str, size: int = None, dtype : str = "float32"):
 
 
 def save_nii(path: str, volume: np.ndarray, affine: np.ndarray, dtype: str = "float32"):
-    nib.save(nib.nifti1image(volume.astype(dtype), affine), path)
+    nib.save(nib.Nifti1Image(volume.astype(dtype), affine), path)
 
 
 def histogram_equalization(volume):
@@ -223,7 +233,9 @@ def load_segmentation(path : str, size : int = None, bin_threshold : float = 0.4
 
 
 if __name__ == '__main__':
-    path = "/home/felix/datasets/MOOD/brain/train/00413.nii.gz"
+    path = "/home/felix/datasets/MOOD/brain/val/00480_uniform_addition_segmentation.nii.gz"
+    segmentation = load_segmentation(path, slices_lower_upper=[23, 200], size=128)
+    path = "/home/felix/datasets/MOOD/brain/val/00480_uniform_addition.nii.gz"
     volume = process_scan(path, size=128, slices_lower_upper=[23, 200])
     print(volume.shape)
     volume_viewer(volume, slices_first=True)
