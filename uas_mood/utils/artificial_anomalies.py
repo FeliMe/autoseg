@@ -29,7 +29,8 @@ def create_sphere(radius, position, size):
 
 
 def create_patch(patch_size, patch_center, size):
-    """Create a path of patch_size on a volume of size at location patch_center
+    """Create a path of patch_size on an image or volume of size at location
+    patch_center.
 
     Args:
         path_size (int)
@@ -39,9 +40,6 @@ def create_patch(patch_size, patch_center, size):
     Returns:
         sphere (np.array of shape size): Volume with the sphere inside
     """
-    assert len(patch_center) == 3
-    assert len(size) == 3
-
     upper_left = np.round(patch_size / 2).astype(int)
     lower_right = np.round(patch_size - upper_left).astype(int)
     starts = patch_center - upper_left
@@ -322,7 +320,7 @@ if __name__ == "__main__":
     # np.random.seed(1)
 
     # Load a sample
-    path = "/home/felix/datasets/MOOD/abdom/train/00002.nii.gz"
+    path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
     volume, affine = load_nii(path)
     print(volume.min(), volume.max(), volume.mean())
 

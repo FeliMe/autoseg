@@ -3,10 +3,13 @@ import argparse
 from glob import glob
 from multiprocessing import Pool
 import os
+import random
 
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 
+from uas_mood.utils.artificial_anomalies import create_patch
 from uas_mood.utils.data_utils import load_segmentation, process_scan
 
 
@@ -108,6 +111,8 @@ class PatchSwapDataset(PreloadDataset):
         super().__init__()
         res = self.load_to_ram(files, img_size, slices_lower_upper)
         samples = [s for r in res for s in r]
+        self.n_slices = samples[0].shape[0]
+        self.n_scans = len(samples)
         self.samples = [sl for sample in samples for sl in sample]
 
     def __len__(self):
@@ -126,14 +131,38 @@ class PatchSwapDataset(PreloadDataset):
     def __getitem__(self, idx):
         # Select sample
         sample = self.samples[idx]
-        # Randomly select another sample
+
+        # Randomly select another sample at the same slice
+        i_slice = idx % self.n_slices
+        other_scan = random.randint(0, self.n_scans - 1)
+        other_idx = other_scan * self.n_slices + i_slice
+        other_sample = self.samples[other_idx]
+
         # Randomly select a patch inside the samples anatomy
+        d = sample.shape[-1]
+        patch_center = [round(random.uniform(0.1 * d, 0.9 * d)) for _ in range(2)]
+        patch_size = round(random.uniform(0.1 * d, 0.4 * d))
+        patch = create_patch(patch_size=patch_size, patch_center=patch_center, size=sample.shape)
+        patch = torch.from_numpy(patch)
+
+        # Patch location should be 0 in the background (works only for brain)
+        patch *= np.where(sample > 0, 1, 0)
+
         # Sample interpolation factor alpha
+        alpha = random.uniform(0, 1)
+
+        # Target pixel value is also alpha
+        patch *= alpha
+
         # Swap sample at patch
-        # Patch location should be 0 in the background
+        patch_idx = torch.nonzero(patch)
+        sample[patch_idx] = (1 - alpha) * sample[patch_idx] + alpha * other_sample[patch_idx]
+
         # Add fake channels dimension
         sample = sample.unsqueeze(0)
-        return sample
+        patch = patch.unsqueeze(0)
+
+        return sample, patch
 
 
 def get_train_files(root : str, body_region : str):
@@ -169,9 +198,9 @@ def get_test_files(root : str, body_region : str):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     train_files = get_train_files(MOODROOT, "brain")
-    val_files = get_test_files(MOODROOT, "brain", "val")
+    test_files = get_test_files(MOODROOT, "brain")
     print(f"# train_files: {len(train_files)}")
-    print(f"# val_files: {len(val_files)}")
+    print(f"# test_files: {len(test_files)}")
 
     # ----- TrainDataset -----
     # ds = TrainDataset(train_files[:10], 128, slices_lower_upper=[127, 131])
@@ -179,8 +208,12 @@ if __name__ == '__main__':
     # print(x.shape)
 
     # ----- TestDataset -----
-    # ds = TestDataset(val_files[:10], 128, slices_lower_upper=[127, 131])
+    # ds = TestDataset(test_files[:10], 128, slices_lower_upper=[127, 131])
     # x, y = next(iter(ds))
     # print(x[1].shape, y[1].shape)
 
     # ----- PatchSwapDataset -----
+    ds = PatchSwapDataset(train_files[:10], 128, slices_lower_upper=[127, 131])
+    x, y = next(iter(ds))
+    print(x.shape)
+    print(y.shape, y.min(), y.max())

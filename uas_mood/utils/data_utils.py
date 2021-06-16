@@ -233,9 +233,9 @@ def load_segmentation(path : str, size : int = None, bin_threshold : float = 0.4
 
 
 if __name__ == '__main__':
-    path = "/home/felix/datasets/MOOD/brain/val/00480_uniform_addition_segmentation.nii.gz"
+    path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift_segmentation.nii.gz"
     segmentation = load_segmentation(path, slices_lower_upper=[23, 200], size=128)
-    path = "/home/felix/datasets/MOOD/brain/val/00480_uniform_addition.nii.gz"
+    path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
     volume = process_scan(path, size=128, slices_lower_upper=[23, 200])
     print(volume.shape)
     volume_viewer(volume, slices_first=True)
