@@ -119,12 +119,12 @@ def test(args, extractor, test_files):
     # Loading results
     print("Loading mu and cov")
     results = torch.load(args.save_path)
-    mu = results['mu']  # [slice, w, h, f]
-    cov_inv = results['cov_inv']  # [slice, w, h, f, f]
+    mu = results['mu']  # [slice, w_, h_, f]
+    cov_inv = results['cov_inv']  # [slice, w_, h_, f, f]
 
     # Reshape mu and cov_inv
-    slices, w, h, f = mu.shape
-    d = slices * w * h
+    slices, w_, h_, f = mu.shape
+    d = slices * w_ * h_
     mu = mu.reshape(d, f)  # [d, f]
     cov_inv = cov_inv.reshape(d, f, f)  # [d, f, f]
 
@@ -134,25 +134,24 @@ def test(args, extractor, test_files):
     ds = TestDataset(test_files, args.img_size, args.slices_lower_upper)
     print(f"Finished loading data in {time() - t_start:.2f}s")
 
-    samples = []
     anomaly_maps = []
     segmentations = []
-    anomalies = defaultdict(int)
+    samples = []
+    anomalies = []
     for batch in tqdm(ds):
         sample, seg = batch
         name = sample[0]
-        print(name)
-        import IPython ; IPython.embed() ; exit(1)
-        sample = sample[-1]  # sample is tuple (path, volume)
-        seg = seg[-1]  # seg is tuple (path, volume)
+        anomaly = name.split('/')[-1].split(".nii.gz")[0][6:]
+        sample = sample[-1]  # sample is tuple (path, volume), volume [slices, w, h]
+        seg = seg[-1]  # seg is tuple (path, volume), volume [slices, w, h]
 
         with torch.no_grad():
             sample = sample.unsqueeze(1).to(args.device)  # [slices, 1, w, h]
-            feat = extractor(sample).cpu().transpose(0, 1)  # [f, slices, w, h]
+            feat = extractor(sample).cpu().transpose(0, 1)  # [f, slices, w_, h_]
 
             # Reshape feature map
-            f, slices, w, h = feat.shape
-            d = slices * w * h
+            f, slices, w_, h_ = feat.shape
+            d = slices * w_ * h_
             feat = feat.reshape(f, d)  # [f, d]
             feat = feat.T  # [d, f]
 
@@ -160,7 +159,7 @@ def test(args, extractor, test_files):
             anomaly_map = [torch.sqrt(((x - m).T @ c_inv.float() @ (x - m)))
                            for x, m, c_inv in zip(feat, mu, cov_inv)]
             anomaly_map = torch.stack(anomaly_map, dim=0)  # [d, 1]
-            anomaly_map = anomaly_map.reshape(1, slices, w, h)
+            anomaly_map = anomaly_map.reshape(1, slices, w_, h_)
 
             # Upsample anomaly map
             anomaly_map = F.interpolate(anomaly_map, size=args.img_size,
@@ -173,14 +172,29 @@ def test(args, extractor, test_files):
 
         anomaly_maps.append(anomaly_map)
         segmentations.append(seg)
-        if len(samples) <= args.n_imgs_log:  # Save some memory
-            samples.append(sample.transpose(0, 1).cpu())
+        anomalies.append(anomaly)
+        if len(samples) <= args.n_imgs_log:
+            samples.append(sample.transpose(0, 1).cpu())  # [1, slices, w, h]
 
-    anomaly_maps = torch.cat(anomaly_maps, dim=0)
-    segmentations = torch.stack(segmentations, dim=0)
-    samples = torch.cat(samples, dim=0)
+    anomaly_maps = torch.cat(anomaly_maps, dim=0)  # [n, slices, w, h]
+    segmentations = torch.stack(segmentations, dim=0)  # [n, slices, w, h]
+    samples = torch.cat(samples, dim=0)  # [n_imgs_log, slices, w, h]
 
-    _, _, _, th = evaluation.evaluate(
+    unique_anomalies = set(anomalies)
+    # We can't evaluate localization on normal samples
+    unique_anomalies.discard("normal")
+
+    for anomaly in sorted(unique_anomalies):
+        print(f"\nEvaluating performance on {anomaly}")
+        predictions = torch.cat([m for m, a in zip(anomaly_maps, anomalies) if a == anomaly], dim=0)
+        targets = torch.cat([s for s, a in zip(segmentations, anomalies) if a == anomaly], dim=0)
+        evaluation.evaluate(
+            predictions=predictions,
+            targets=targets,
+        )
+
+    print("\nEvaluating total performance")
+    _, _, th = evaluation.evaluate(
         predictions=anomaly_maps,
         targets=segmentations,
     )
@@ -189,7 +203,7 @@ def test(args, extractor, test_files):
     bin_map = torch.where(anomaly_maps > th, 1., 0.)
 
     print("Saving some images")
-    c = (args.slices_lower_upper[1] - args.slices_lower_upper[0]) // 2
+    c = args.n_slices // 2
     images = [
         samples[:, c][:, None],
         anomaly_maps[:, c][:, None],
@@ -246,6 +260,7 @@ if __name__ == '__main__':
     # Get train and test paths
     train_files = get_train_files(MOODROOT, args.ds)
     test_files = get_test_files(MOODROOT, args.ds)
+    # test_files = test_files[:30]  # TODO: remove
 
     # Prepare feature extractor
     extractor = feature.Extractor(

@@ -124,8 +124,8 @@ def compute_best_dice(preds, targets, n_thresh=100):
     thresholds = np.linspace(preds.min(), preds.max(), n_thresh)
     threshs = []
     scores = []
-    pbar = tqdm(thresholds, desc="DICE search")
-    for t in pbar:
+    # for t in tqdm(thresholds, desc="DSC search"):
+    for t in thresholds:
         dice = compute_dice(torch.where(preds > t, 1., 0.), targets)
         scores.append(dice)
         threshs.append(t)
@@ -202,23 +202,20 @@ def compute_pro_auc(predictions, targets, expect_fpr=0.3, max_steps=300):
     min_th = predictions.min()
     delta = (max_th - min_th) / max_steps
 
-    ious_mean = []
-    ious_std = []
     pros_mean = []
     pros_std = []
     threds = []
     fprs = []
     binary_score_maps = np.zeros_like(predictions, dtype=np.bool)
-    for step in tqdm(range(max_steps), desc="PRO AUC"):
+    # for step in tqdm(range(max_steps), desc="PRO AUC"):
+    for step in range(max_steps):
         thred = max_th - step * delta
         # segmentation
         binary_score_maps[predictions <= thred] = 0
         binary_score_maps[predictions > thred] = 1
 
         pro = []    # per region overlap
-        iou = []    # per image iou
         # pro: find each connected gt region, compute the overlapped pixels between the gt region and predicted region
-        # iou: for each image, compute the ratio, i.e. intersection/union between the gt and predicted binary map
         for i in range(len(binary_score_maps)):    # for i th image
             # pro (per region level)
             label_map = measure.label(targets[i], connectivity=2)
@@ -232,17 +229,8 @@ def compute_pro_auc(predictions, targets, expect_fpr=0.3, max_steps=300):
                 intersection = np.logical_and(
                     cropped_pred_label, cropped_targets).astype(np.float32).sum()
                 pro.append(intersection / prop.area)
-            # iou (per image level)
-            intersection = np.logical_and(
-                binary_score_maps[i], targets[i]).astype(np.float32).sum()
-            union = np.logical_or(
-                binary_score_maps[i], targets[i]).astype(np.float32).sum()
-            if targets[i].any() > 0:    # when the gt have no anomaly pixels, skip it
-                iou.append(intersection / union)
+
         # against steps and average metrics on the testing data
-        ious_mean.append(np.array(iou).mean())
-#             print("per image mean iou:", np.array(iou).mean())
-        ious_std.append(np.array(iou).std())
         pros_mean.append(np.array(pro).mean())
         pros_std.append(np.array(pro).std())
         # fpr for pro-auc
@@ -258,13 +246,6 @@ def compute_pro_auc(predictions, targets, expect_fpr=0.3, max_steps=300):
     pros_std = np.array(pros_std)
     fprs = np.array(fprs)
 
-    ious_mean = np.array(ious_mean)
-    ious_std = np.array(ious_std)
-
-    # best per image iou
-    best_miou = ious_mean.max()
-    print(f"Best IOU: {best_miou:.4f}")
-
     # default 30% fpr vs pro, pro_auc
     # find the indexs of fprs that is less than expect_fpr (default 0.3)
     idx = fprs <= expect_fpr
@@ -272,9 +253,9 @@ def compute_pro_auc(predictions, targets, expect_fpr=0.3, max_steps=300):
     fprs_selected = rescale(fprs_selected)    # rescale fpr [0,0.3] -> [0, 1]
     pros_mean_selected = pros_mean[idx]
     pro_auc_score = auc(fprs_selected, pros_mean_selected)
-    print(f"pro auc ({int(expect_fpr*100)}% FPR): {pro_auc_score:.4f}")
+    print(f"PRO AUC ({int(expect_fpr*100)}% FPR): {pro_auc_score:.4f}")
 
-    return pro_auc_score, best_miou
+    return pro_auc_score
 
 
 def compute_average_precision(predictions, targets):
@@ -290,14 +271,8 @@ def compute_average_precision(predictions, targets):
     return ap
 
 
-def evaluate(predictions, targets, auroc=True, ap=True, dice=True,
-             proauc=True, n_thresh_dice=100):
-    if auroc:
-        auroc = compute_auroc(predictions, targets)
-        print(f"AUROC: {auroc:.4f}")
-    else:
-        auroc = 0.0
-
+def evaluate(predictions, targets, ap=True, dice=True, proauc=True,
+             n_thresh_dice=100):
     if ap:
         ap = compute_average_precision(predictions, targets)
         print(f"Average Precision: {ap:.4f}")
@@ -306,7 +281,7 @@ def evaluate(predictions, targets, auroc=True, ap=True, dice=True,
 
     if dice:
         dice, th = compute_best_dice(predictions, targets, n_thresh=n_thresh_dice)
-        print(f"DICE: {dice:.4f}, best threshold: {th:.4f}")
+        print(f"DSC: {dice:.4f}, best threshold: {th:.4f}")
     else:
         dice = 0.0
         th = None
@@ -318,4 +293,4 @@ def evaluate(predictions, targets, auroc=True, ap=True, dice=True,
             targets=targets.view(-1, 1, h, w),
         )
 
-    return auroc, ap, dice, th
+    return ap, dice, th
