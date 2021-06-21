@@ -5,7 +5,6 @@ for Anomaly Detection and Localization"
 https://arxiv.org/pdf/2011.08785.pdf
 """
 import argparse
-from collections import defaultdict
 import os
 from time import time
 

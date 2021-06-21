@@ -5,6 +5,7 @@ from multiprocessing import Pool
 import os
 import random
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -105,7 +106,7 @@ class TestDataset(PreloadDataset):
     def __getitem__(self, idx):
         return self.samples[idx], self.segmentations[idx]
 
-    
+
 class PatchSwapDataset(PreloadDataset):
     def __init__(self, files, img_size, slices_lower_upper):
         super().__init__()
@@ -130,7 +131,7 @@ class PatchSwapDataset(PreloadDataset):
 
     def __getitem__(self, idx):
         # Select sample
-        sample = self.samples[idx]
+        sample = self.samples[idx].clone()
 
         # Randomly select another sample at the same slice
         i_slice = idx % self.n_slices
@@ -146,16 +147,16 @@ class PatchSwapDataset(PreloadDataset):
         patch = torch.from_numpy(patch)
 
         # Patch location should be 0 in the background (works only for brain)
-        patch *= np.where(sample > 0, 1, 0)
+        patch *= torch.where(sample > 0, 1, 0)
 
         # Sample interpolation factor alpha
-        alpha = random.uniform(0, 1)
+        alpha = random.uniform(0.05, 0.95)
 
         # Target pixel value is also alpha
         patch *= alpha
 
         # Swap sample at patch
-        patch_idx = torch.nonzero(patch)
+        patch_idx = patch.nonzero(as_tuple=True)
         sample[patch_idx] = (1 - alpha) * sample[patch_idx] + alpha * other_sample[patch_idx]
 
         # Add fake channels dimension
@@ -217,3 +218,10 @@ if __name__ == '__main__':
     x, y = next(iter(ds))
     print(x.shape)
     print(y.shape, y.min(), y.max())
+    fig = plt.figure()
+    plt.axis('off')
+    fig.add_subplot(1, 2, 1)
+    plt.imshow(x[0], cmap="gray", vmin=0., vmax=1.)
+    fig.add_subplot(1, 2, 2)
+    plt.imshow(y[0], cmap="gray", vmin=0., vmax=1.)
+    plt.show()

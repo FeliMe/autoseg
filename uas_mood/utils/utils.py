@@ -1,3 +1,4 @@
+from datetime import datetime
 import math
 from numbers import Number
 
@@ -6,7 +7,7 @@ from skimage import measure
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm
+
 
 def torch2np_img(img):
     """
@@ -19,6 +20,14 @@ def torch2np_img(img):
         img (np.array): range(0, 255), dtype np.uint8, shape (H, W, C)
     """
     return (img.permute(1, 2, 0).numpy() * 255.).astype(np.uint8)
+
+
+def get_training_timings(start_time, current_epoch, max_epochs):
+    time_elapsed = datetime.now() - datetime.fromtimestamp(start_time)
+    # self.current_epoch starts at 0
+    time_per_epoch = time_elapsed / (current_epoch + 1)
+    time_left = (max_epochs - current_epoch - 1) * time_per_epoch
+    return time_elapsed, time_per_epoch, time_left
 
 
 def connected_components_3d(volume):

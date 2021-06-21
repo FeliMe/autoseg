@@ -15,7 +15,6 @@ from tqdm import tqdm
 from uas_mood.utils import utils
 
 
-
 def plot_results(images: list, titles: list, n_images=20):
     """Returns a plot containing the input images, reconstructed images,
     uncertainty maps and anomaly maps"""
@@ -26,8 +25,9 @@ def plot_results(images: list, titles: list, n_images=20):
     # Stack tensors to image grid and transform to numpy for plotting
     img_dict = {}
     for img, title in zip(images, titles):
-        img_grid = make_grid(
-            img[:n_images].float(), nrow=1, normalize=True, scale_each=True)
+        img_grid = make_grid(img[:n_images].float(), nrow=1, normalize=False)
+        # img_grid = make_grid(
+        #     img[:n_images].float(), nrow=1, normalize=True, scale_each=True)
         img_grid = utils.torch2np_img(img_grid)
         img_dict[title] = img_grid
 
@@ -38,7 +38,7 @@ def plot_results(images: list, titles: list, n_images=20):
     plt.axis('off')
     for i, key in enumerate(img_dict.keys()):
         a = fig.add_subplot(1, n, i + 1)
-        plt.imshow(img_dict[key])
+        plt.imshow(img_dict[key], vmin=0., vmax=1.)
         a.set_title(key)
 
     return fig

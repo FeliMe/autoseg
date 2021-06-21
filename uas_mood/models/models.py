@@ -222,5 +222,5 @@ if __name__ == '__main__':
     model = WideResNetAE(size).to(device)
     x = torch.randn(2, 1, size, size).to(device)
     y = model(x)
-    print(y.shape)
+    print(y.shape, y.min(), y.max())
 

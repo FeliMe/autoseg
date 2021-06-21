@@ -94,7 +94,7 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
         ax.index = d - index
         # ax.index = index
         aspect = shape[2] / shape[1]
-        ax.imshow(ax.volume[ax.index], aspect=aspect)
+        ax.imshow(ax.volume[ax.index], aspect=aspect, vmin=0., vmax=1.)
         ax.set_title(title)
         ax.text(5, 15, f"Slice: {d - ax.index}", color="white")
 
