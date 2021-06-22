@@ -1,17 +1,14 @@
-import warnings
-
 import matplotlib.pyplot as plt
 import numpy as np
-from torchvision.utils import make_grid
 from skimage import measure
 from sklearn.metrics import (
     auc,
     average_precision_score,
-    roc_auc_score,
-    roc_curve,
+    precision_recall_curve,
 )
 import torch
-from tqdm import tqdm
+from torchvision.utils import make_grid
+
 from uas_mood.utils import utils
 
 
@@ -44,69 +41,31 @@ def plot_results(images: list, titles: list, n_images=20):
     return fig
 
 
-def plot_roc(fpr, tpr, auroc, title=""):
-    """Returns a plot of the reciever operating characteristics (ROC)
+def plot_prc(predictions, targets):
+    """Returns a plot of the Precision-Recall Curve (PRC)
 
     Args:
-        fpr (array): false positives per threshold
-        tpr (array): true positives per threshold
-        auroc (float): area under ROC curve
-        title (str): Title of plot
+        predictions (torch.Tensor): Predicted anomaly map
+        targets (torch.Tensor): Target segmentation
 
     Returns:
         fig (matplotlib.figure.Figure): Finished plot
     """
 
+    precision, recall, _ = precision_recall_curve(
+        targets.view(-1), predictions.view(-1))
+    ap = compute_average_precision(predictions, targets)
     fig = plt.figure()
     fig.add_subplot(1, 1, 1)
-    plt.title(title)
-    plt.plot(fpr, tpr, 'b', label='AUC = %0.2f' % auroc)
+    plt.title("Precision-Recall Curve")
+    plt.plot(precision, recall, 'b', label='AP = %0.2f' % ap)
     plt.legend(loc='lower right')
     plt.plot([0, 1], [0, 1], 'r--')
     plt.xlim([0, 1])
     plt.ylim([0, 1])
-    plt.ylabel('True Positive Rate')
-    plt.xlabel('False Positive Rate')
+    plt.ylabel('Recall')
+    plt.xlabel('Precision')
     return fig
-
-
-def compute_auroc(predictions, targets):
-    """Compute the area under reciever operating characteristics curve.
-    If the label is a scalar value, we measure the detection performance,
-    else the segmentation performance.
-
-    Args:
-        predictions (torch.tensor): Predicted anomaly map. Shape [b, c, h, w]
-        targets (torch.tensor): Target label [b] or segmentation map [b, c, h, w]
-    Returns:
-        auroc (float)
-    """
-
-    # Safety check. Can't compute auroc with no positive targets
-    if targets.sum() == 0:
-        warnings.warn("Can't compute auroc with only negative target values, "
-                      "returning 0.5")
-        auroc = 0.5
-    else:
-        auroc = roc_auc_score(targets.view(-1), predictions.view(-1))
-    return auroc
-
-
-def compute_roc(predictions, targets):
-    """Compute the reciever operating characteristics curve.
-    If the label is a scalar value, we measure the detection performance,
-    else the segmentation performance.
-
-    Args:
-        predictions (torch.tensor): Predicted anomaly map. Shape [b, c, h, w]
-        targets (torch.tensor): Target label [b] or segmentation map [b, c, h, w]
-    Returns:
-        fpr (np.array): False positive rate
-        tpd (np.array): True positive rate
-        thresholds (np.array)
-    """
-    fpr, tpr, thresholds = roc_curve(targets.view(-1), predictions.view(-1))
-    return fpr, tpr, thresholds
 
 
 def compute_best_dice(preds, targets, n_thresh=100):

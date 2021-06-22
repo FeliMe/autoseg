@@ -5,6 +5,10 @@ import torch
 from uas_mood.utils.data_utils import load_nii, volume_viewer
 
 
+def rand_sign():
+    return 1 if np.random.random() < 0.5 else -1
+
+
 def create_sphere(radius, position, size):
     """Create a shpere with radius on a volume of size at position
 
@@ -57,7 +61,7 @@ def create_patch(patch_size, patch_center, size):
     return patch
 
 
-def uniform_addition_anomaly(volume, mask, mu=0.0, std=0.3):
+def uniform_addition_anomaly(volume, mask):
     """Adds uniform noise sampled from a normal distribution with mu and std
     to a volume at mask and only at pixels where the object is
 
@@ -71,7 +75,9 @@ def uniform_addition_anomaly(volume, mask, mu=0.0, std=0.3):
     assert isinstance(volume, np.ndarray) or isinstance(volume, torch.Tensor)
 
     # Sample intensity
-    intensity = np.random.normal(mu, std)
+    intensity_range = np.max(volume) - np.min(volume)
+    intensity = np.random.uniform(0.2 * intensity_range, 0.3 * intensity_range)
+    intensity *= rand_sign()
 
     # Apply anomaly
     volume += intensity * mask
@@ -80,7 +86,7 @@ def uniform_addition_anomaly(volume, mask, mu=0.0, std=0.3):
     return volume, mask
 
 
-def noise_addition_anomaly(volume, mask, mu=0., std=0.1):
+def noise_addition_anomaly(volume, mask):
     """Adds noise sampled from a normal distribution with mu and std
     to voxels of a volume at mask and only at pixels where the object is
 
@@ -91,16 +97,16 @@ def noise_addition_anomaly(volume, mask, mu=0., std=0.1):
         std (float): Standard deviation of intensity
     """
 
-    noise_mask = np.zeros_like(volume)
-    intensities = np.random.normal(mu, std, size=np.count_nonzero(mask))
-    inds = np.where(mask > 0)
-    for i, (x, y, z) in enumerate(zip(*inds[-3:])):
-        # noise_mask[..., x, y, z] = intensities[i]
-        noise_mask[x, y, z] = intensities[i]
+    # Sample random noise
+    intensity_range = np.max(volume) - np.min(volume)
+    intensity = np.random.uniform(0.05 * intensity_range, 0.3 * intensity_range, size=mask.shape)
+    intensity *= rand_sign()
 
-    # volume += noise_mask * obj_mask
-    volume += noise_mask
-    volume = np.clip(volume, 0., 1.)
+    # Reduce noise to mask only
+    sphere_add = mask * intensity
+
+    # Apply noise
+    volume = volume + sphere_add
 
     return volume, mask
 
@@ -195,9 +201,6 @@ def uniform_shift_anomaly(volume, mask):
         shifted = np.roll(shifted, shift=z, axis=-3)
         return shifted
 
-    def rand_sign():
-        return 1 if np.random.random() < 0.5 else -1
-
     # Create shift parameters
     c, h, w = volume.shape[-3:]
     x = rand_sign() * np.random.randint(0.02 * w, 0.05 * w)
@@ -248,6 +251,20 @@ def sample_location(volume):
     return center
 
 
+def sample_location2(volume : np.ndarray):
+    # Get dimensions
+    dims = np.array(np.shape(volume))
+    core = dims // 2  # width of core region
+    offset = core // 2  # sampling range of center
+
+    # Sample center of location
+    center = []
+    for i,_ in enumerate(dims):
+        center.append(np.random.randint(offset[i],offset[i]+core[i]))
+
+    return center
+
+
 def truncate_mask(volume, mask):
     """Returns a mask only where the object in volume and mask overlay
 
@@ -273,10 +290,13 @@ def create_random_anomaly(volume, verbose=False):
     assert volume.ndim == 3
     # Sample random center position inside the anatomy
     center = sample_location(volume)
+    # center = sample_location2(volume)  # TODO: Change or keep
 
     # Select a radius at random
-    d = volume.shape[0] / 2
-    radius = np.random.randint(0.1 * d, 0.4 * d)
+    d = volume.shape[0]
+    min_radius = np.round(0.05 * d)  # TODO: Change to 0.08 and 0.13 for some anomalies
+    max_radius = np.round(0.10 * d)
+    radius = np.random.randint(min_radius, max_radius)
 
     # Create sphere with samples radius and location
     sphere = create_sphere(radius, center, list(volume.shape))
@@ -294,15 +314,16 @@ def create_random_anomaly(volume, verbose=False):
         "reflection"
     ]
     anomaly_type = np.random.choice(anomalies)
+    # anomaly_type = "noise_addition"  # TODO: remove
 
     if verbose:
         print(f"{anomaly_type} at center {center} with radius {radius}")
 
     # Create anomaly
     if anomaly_type == "uniform_addition":
-        res, segmentation = uniform_addition_anomaly(volume, sphere, mu=0.0, std=0.4)
+        res, segmentation = uniform_addition_anomaly(volume, sphere)
     elif anomaly_type == "noise_addition":
-        res, segmentation = noise_addition_anomaly(volume, sphere, mu=0.0, std=0.2)
+        res, segmentation = noise_addition_anomaly(volume, sphere)
     elif anomaly_type == "sink_deformation":
         res, segmentation = sink_deformation_anomaly(volume, sphere, center, radius)
     elif anomaly_type == "source_deformation":

@@ -163,6 +163,8 @@ class PatchSwapDataset(PreloadDataset):
         sample = sample.unsqueeze(0)
         patch = patch.unsqueeze(0)
 
+        sample = (sample - sample.mean()) / sample.std()  # TODO: Test, remove
+
         return sample, patch
 
 

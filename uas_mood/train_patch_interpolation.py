@@ -9,12 +9,11 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from ray import tune
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
 from uas_mood.models.models import WideResNetAE
-from uas_mood.utils import evaluation
-from uas_mood.utils import utils
+from uas_mood.utils import evaluation, utils
+from uas_mood.utils.hparam_search import hparam_search
 from uas_mood.utils.dataset import (
     MOODROOT,
     PatchSwapDataset,
@@ -32,11 +31,18 @@ class LitModel(pl.LightningModule):
         self.args = args
 
         # Network
-        self.net = WideResNetAE(inp_size=args.img_size, widen_factor=args.model_width)
+        # self.net = WideResNetAE(inp_size=args.img_size, widen_factor=args.model_width)
+        self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
+                                  'unet', in_channels=1, out_channels=1,
+                                  init_features=32,
+                                  pretrained=False)
 
         # Example input array needed to log the graph in tensorboard
         self.example_input_array = torch.randn(
             [5, 1, args.img_size, args.img_size])
+
+        # Init Loss function
+        self.loss_fn = torch.nn.BCELoss()
 
         if self.logger:
             self.logger.log_hyperparams(self.args)
@@ -54,6 +60,12 @@ class LitModel(pl.LightningModule):
     def print_(self, msg):
         if self.args.verbose:
             print(msg)
+
+    def log_metric(self, name, value):
+        if self.logger:
+            self.log(name, value, logger=True)
+        if self.args.hparam_search:
+            tune.report(value)
 
     @staticmethod
     def stack_outputs(outputs):
@@ -93,7 +105,7 @@ class LitModel(pl.LightningModule):
         pred = self(x)
 
         # Compute loss
-        loss = F.binary_cross_entropy(pred, y)
+        loss = self.loss_fn(pred, y)
 
         return {"loss": loss}
 
@@ -102,18 +114,17 @@ class LitModel(pl.LightningModule):
         out = self.stack_outputs(outputs)
 
         # Print training epoch summary
-        self.print_(f"Epoch [{self.current_epoch}/{self.args.max_epochs}] Train - loss: {out['loss'].mean():.4f}")
+        self.print_(f"Epoch [{self.current_epoch + 1}/{self.args.max_epochs}] Train - loss: {out['loss'].mean():.4f}")
 
         # Tensorboard logs
-        if self.logger:
-            self.log("train_loss", out["loss"].mean(), logger=True)
+        self.log_metric("train_loss", out["loss"].mean())
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         pred = self(x)
 
         # Compute loss
-        loss = F.binary_cross_entropy(pred, y)
+        loss = self.loss_fn(pred, y)
 
         return {
             "inp":  x.cpu(),
@@ -132,11 +143,11 @@ class LitModel(pl.LightningModule):
         ap = evaluation.compute_average_precision(
             out["anomaly_map"], torch.where(out["target_seg"] > 0, 1, 0))
 
+        self.log_metric("ap", ap)
+        self.log_metric("val_loss", out["loss"].mean())
+
         # Tensorboard logs
         if self.logger:
-            self.log("ap", ap, logger=True)
-            self.log("val_loss", out['loss'].mean(), logger=True)
-
             # log a reconstructed sample
             fig = self.plot_reconstruction(
                 out["inp"], out["anomaly_map"], out["target_seg"])
@@ -152,7 +163,7 @@ class LitModel(pl.LightningModule):
             self.start_time, self.current_epoch, self.args.max_epochs
         )
         # Print validation summary
-        print(f"Time for validation: {time() - val_start:.2f}s")
+        self.print_(f"Time for validation: {time() - val_start:.2f}s")
         self.print_(f"Epoch [{self.current_epoch}|{self.args.max_epochs}]"
                     f"\nTime elapsed: {time_elapsed}, "
                     f"Time left: {time_left}, "
@@ -162,10 +173,12 @@ class LitModel(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         x, y = batch
+        x = x[1].unsqueeze(1)  # x was a tuple of (file_name, volume [slices, w, h])
+        y = y[1].unsqueeze(1)  # y was a tuple of (file_name, volume [slices, w, h])
         pred = self(x)
 
         # Compute loss
-        loss = F.binary_cross_entropy(pred, y)
+        loss = self.loss_fn(pred, y.float())
 
         return {
             "inp":  x.cpu(),
@@ -178,10 +191,13 @@ class LitModel(pl.LightningModule):
         # Stack all values to a dict
         out = self.stack_outputs(outputs)
 
-        target_seg = out['target_seg']
+        target_seg = out["target_seg"]
+        pred = out["anomaly_map"]
+        print(pred.min(), pred.max(), pred.mean())
 
+        print(f"Test loss: {out['loss'].mean():.4f}")
         _, _, th = evaluation.evaluate(
-            predictions=out['anomaly_map'],
+            predictions=out["anomaly_map"],
             targets=target_seg,
         )
 
@@ -193,22 +209,20 @@ class LitModel(pl.LightningModule):
             label = torch.where(target_seg.sum((1, 2, 3)) > 0, 1, 0)
 
             # Binarize map
-            bin_map = torch.where(out['anomaly_map'] > th, 1., 0.)
+            bin_map = torch.where(out["anomaly_map"] > th, 1., 0.)
 
             images = [
-                out['inp'][label == 1],
-                out['anomaly_map'][label == 1],
+                out["inp"][label == 1],
+                out["anomaly_map"][label == 1],
                 bin_map[label == 1],
+                target_seg[label == 1],
             ]
             titles = [
-                'Input image',
-                'Anomaly map',
-                'Binarized map',
+                "Input image",
+                "Anomaly map",
+                "Binarized map",
+                "Ground turth",
             ]
-
-            if out['label'].ndim > 1:
-                images.append(out['label'][label == 1])
-                titles.append('Ground truth')
 
             # Log sample images to tensorboard
             print("Writing test sample images to tensorboard")
@@ -219,26 +233,18 @@ class LitModel(pl.LightningModule):
             )
             tb.add_figure("Test samples", fig, global_step=self.global_step)
 
-            # Log precision-recall curve to tensorboard  # TODO: Implement
-            # fig = evaluation.plot_roc(fpr, tpr, auroc, title="Precision-Recall Curve")
-            # tb.add_figure("Precision-Recall Curve", fig, global_step=self.global_step)
+            # Log precision-recall curve to tensorboard
+            fig = evaluation.plot_prc(
+                predictions=out["anomaly_map"],
+                targets=target_seg
+            )
+            tb.add_figure("Precision-Recall Curve", fig, global_step=self.global_step)
 
 
 def train(args, trainer, train_files):
-    # Load data
-    print("Loading training data")
-    t_start = time()
-    ds = PatchSwapDataset(train_files, args.img_size, args.slices_lower_upper)
-    trainloader = DataLoader(ds, batch_size=args.batch_size, num_workers=args.num_workers)
-    val_inds = torch.randperm(len(ds))[:args.val_samples]
-    val_sampler = SubsetRandomSampler(val_inds)
-    valloader = DataLoader(ds, batch_size=args.batch_size,
-                           num_workers=args.num_workers, sampler=val_sampler)
-    print(f"Finished loading training data in {time() - t_start:.2f}s")
-
     # Init lighning model
     if args.model_ckpt:
-        print(f"Restoring checkpoint from {args.model_ckpt}")
+        utils.printer(f"Restoring checkpoint from {args.model_ckpt}", args.verbose)
         model = LitModel.load_from_checkpoint(args.model_ckpt, args=args)
     else:
         model = LitModel(args)
@@ -247,9 +253,20 @@ def train(args, trainer, train_files):
     if not args.debug:
         matplotlib.use('Agg')
 
+    # Load data
+    utils.printer("Loading training data", args.verbose)
+    t_start = time()
+    ds = PatchSwapDataset(train_files, args.img_size, args.slices_lower_upper)
+    trainloader = DataLoader(ds, batch_size=args.batch_size, num_workers=args.num_workers)
+    val_inds = torch.randperm(len(ds))[:args.val_samples]
+    val_sampler = SubsetRandomSampler(val_inds)
+    valloader = DataLoader(ds, batch_size=args.batch_size,
+                           num_workers=args.num_workers, sampler=val_sampler)
+    utils.printer(f"Finished loading training data in {time() - t_start:.2f}s", args.verbose)
+
     # Train
     model.start_time = time()
-    print("Start training")
+    utils.printer("Start training", args.verbose)
     trainer.fit(model, trainloader, valloader)
 
     # Return the trained model
@@ -326,6 +343,9 @@ if __name__ == '__main__':
     # Reproducibility
     pl.seed_everything(args.seed)
 
+    # Save number of slices per sample as a parameters
+    args.n_slices = args.slices_lower_upper[1] - args.slices_lower_upper[0]
+
     # Get train and test paths
     train_files = get_train_files(MOODROOT, args.data)
     test_files = get_test_files(MOODROOT, args.data)
@@ -356,12 +376,18 @@ if __name__ == '__main__':
 
     if args.hparam_search:
         # Hyperparameter search with ray tune
-        raise NotImplementedError
-        # hparam_search(
-        #     args=args,
-        #     trainer=trainer,
-        #     train_fn=train
-        # )
+        search_config = {
+            "lr": tune.loguniform(1e-5, 1e-4),
+            # "batch_size": tune.choice([32, 64, 128]),
+            "model_width": tune.choice([2, 3, 4, 5]),
+        }
+        hparam_search(
+            search_config=search_config,
+            args=args,
+            trainer=trainer,
+            train_files=train_files,
+            train_fn=train
+        )
     else:
         model = None
         if args.train:

@@ -137,7 +137,7 @@ def load_nii(path: str, size: int = None, dtype : str = "float32"):
     """
     # Load file
     data = nib.load(path, keep_file_open=False)
-    volume = data.get_fdata(caching='unchanged', dtype=np.dtype(dtype))
+    volume = data.get_fdata(caching='unchanged', dtype=np.dtype(dtype))  # [w, h, slices]
     affine = data.affine
 
     # Squeeze optional 4th dimension

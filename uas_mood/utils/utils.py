@@ -9,6 +9,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def printer(msg : str, verbose : bool):
+    if verbose:
+        print(msg)
+
+
 def torch2np_img(img):
     """
     Converts a pytorch image into a cv2 RGB image
