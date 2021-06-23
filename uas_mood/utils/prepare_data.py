@@ -1,3 +1,4 @@
+import argparse
 from collections import defaultdict
 from glob import glob
 import os
@@ -161,16 +162,30 @@ def create_test_anomalies(root):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--split", action="store_true")
+    parser.add_argument("--create_anomalies", action="store_true")
+    parser.add_argument("--data", type=str, choices=["brain", "abdom"], required=True)
+    args = parser.parse_args()
+
     seed = 0
     random.seed(seed)
     np.random.seed(seed)
-    # Check if data is correctly downloaded
-    # sanity_check()
-    # print("Splitting abdom files")
-    # split_ds(ABDOMROOT)
-    # print("Splitting brain files")
-    # split_ds(BRAINROOT)
-    # print("Creating artificial anomalies for brain test")
-    # create_test_anomalies(os.path.join(BRAINROOT, "test"))
-    print("Creating artificial anomalies for abdomen test")
-    create_test_anomalies(os.path.join(ABDOMROOT, "test"))
+
+    if args.split:
+        # Check if data is correctly downloaded
+        sanity_check()
+        if args.data == "abdom":
+            print("Splitting abdom files")
+            split_ds(ABDOMROOT)
+        else:
+            print("Splitting brain files")
+            split_ds(BRAINROOT)
+
+    if args.create_anomalies:
+        if args.data == "abdom":
+            print("Creating artificial anomalies for abdomen test")
+            create_test_anomalies(os.path.join(ABDOMROOT, "test"))
+        else:
+            print("Creating artificial anomalies for brain test")
+            create_test_anomalies(os.path.join(BRAINROOT, "test"))

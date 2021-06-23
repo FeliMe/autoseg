@@ -235,18 +235,29 @@ def reflection_anomaly(volume, mask):
 
 
 def sample_location(volume):
+    dims = np.array(np.shape(volume))
+    core = dims // 2  # width of core region
+    offset = core // 2  # sampling range of center
+    rng = [slice(c - o, c + o) for c, o in zip(core, offset)]  # Sampling range
+
     # Select a center from the nonzero pixels in volume
     if volume.shape[0] == 256:  # Brain
-        nonzero_inds = np.where(volume > 0)
+        inds = np.where(volume[rng[0], rng[1], rng[2]] > 0)
     elif volume.shape[0] == 512:  # Abdomen has no 0 intensities
-        nonzero_inds = np.where(volume > 5e-2)
+        inds = np.where(volume[rng[0], rng[1], rng[2]] > 5e-2)
     else:
         raise RuntimeError("Invalid volume size")
 
-    if isinstance(nonzero_inds, torch.Tensor):
-        nonzero_inds = nonzero_inds.numpy()
-    ix = np.random.choice(len(nonzero_inds[0]))
-    center = [ind[ix] for ind in nonzero_inds[-3:]]
+    if isinstance(inds, torch.Tensor):
+        inds = inds.numpy()
+    # Convert from tuple to array
+    inds = np.array(inds)
+
+    # Add the cropped offset from before
+    inds = inds + offset[:, None]
+
+    ix = np.random.choice(len(inds[0]))
+    center = [ind[ix] for ind in inds[-3:]]
 
     return center
 
@@ -288,21 +299,6 @@ def truncate_mask(volume, mask):
 
 def create_random_anomaly(volume, verbose=False):
     assert volume.ndim == 3
-    # Sample random center position inside the anatomy
-    center = sample_location(volume)
-    # center = sample_location2(volume)  # TODO: Change or keep
-
-    # Select a radius at random
-    d = volume.shape[0]
-    min_radius = np.round(0.05 * d)  # TODO: Change to 0.08 and 0.13 for some anomalies
-    max_radius = np.round(0.10 * d)
-    radius = np.random.randint(min_radius, max_radius)
-
-    # Create sphere with samples radius and location
-    sphere = create_sphere(radius, center, list(volume.shape))
-
-    # Truncate sphere to include only voxels inside the object
-    sphere = truncate_mask(volume, sphere)
 
     # Select a random anomaly
     anomalies = [
@@ -314,7 +310,26 @@ def create_random_anomaly(volume, verbose=False):
         "reflection"
     ]
     anomaly_type = np.random.choice(anomalies)
-    # anomaly_type = "noise_addition"  # TODO: remove
+    # anomaly_type = "uniform_shift"
+
+    # Sample random center position inside the anatomy
+    center = sample_location(volume)
+
+    # Select a radius at random
+    d = volume.shape[0]
+    if anomaly_type in ["uniform_addition", "noise_addition"]:
+        min_radius = np.round(0.05 * d)
+        max_radius = np.round(0.10 * d)
+    else:
+        min_radius = np.round(0.08 * d)
+        max_radius = np.round(0.13 * d)
+    radius = np.random.randint(min_radius, max_radius)
+
+    # Create sphere with samples radius and location
+    sphere = create_sphere(radius, center, list(volume.shape))
+
+    # Truncate sphere to include only voxels inside the object
+    sphere = truncate_mask(volume, sphere)
 
     if verbose:
         print(f"{anomaly_type} at center {center} with radius {radius}")
