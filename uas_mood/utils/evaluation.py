@@ -1,10 +1,12 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal import savgol_filter
 from skimage import measure
 from sklearn.metrics import (
     auc,
     average_precision_score,
     precision_recall_curve,
+    roc_auc_score,
 )
 import torch
 from torchvision.utils import make_grid
@@ -19,9 +21,11 @@ def plot_results(images: list, titles: list, n_images=20):
     if len(images) != len(titles):
         raise RuntimeError("not the same number of images and titles")
 
+
     # Stack tensors to image grid and transform to numpy for plotting
     img_dict = {}
     for img, title in zip(images, titles):
+        assert img[0].ndim == 3, "Invalid number of dimensions, missing channel dim?"
         img_grid = make_grid(img[:n_images].float(), nrow=1, normalize=False)
         # img_grid = make_grid(
         #     img[:n_images].float(), nrow=1, normalize=True, scale_each=True)
@@ -230,11 +234,60 @@ def compute_average_precision(predictions, targets):
     return ap
 
 
-def evaluate(predictions, targets, ap=True, dice=True, proauc=True,
+def fpi_sample_score(pred) -> float:
+    """Compute the anomaly score for a patient volume from the predictions of
+    the network.
+
+    Args:
+        pred (np.ndarray or torch.Tensor): Network output for one patient volume
+                                           of shape [slices, w, h]
+    Returns:
+        sample_score (float): Anomaly score for that patient
+    """
+    if isinstance(pred, torch.Tensor):
+        pred = pred.numpy()
+
+    im_level_score = np.mean(pred, axis=(1, 2))
+
+    # Take 10% sliding filter window
+    window_size = int((len(im_level_score) * 0.1) // 2) * 2 + 1
+    # Apply a 3rd polynomial savgol filter
+    im_level_score_f = savgol_filter(im_level_score, window_size, 3)
+    im_level_score_s = sorted(im_level_score_f)
+
+    # Take mean of top quartile values
+    im_level_score_s = im_level_score_s[int(len(im_level_score_s) * 0.75):]
+    sample_score = np.mean(im_level_score_s)
+
+    return sample_score
+
+
+def fpi_sample_score_list(predictions):
+    """Return sample-wise anomaly scores for a list or tensor of patient volumes
+    each with shape [slices, w, h]
+
+    Args:
+        predictions (list of tensors or array, or tensor or array)
+    """
+    return torch.tensor([fpi_sample_score(pred) for pred in predictions])
+
+
+def evaluate_sample_wise(predictions, targets, verbose=True):
+    auroc = roc_auc_score(targets, predictions)
+    ap = average_precision_score(targets, predictions)
+
+    if verbose:
+        print(f"AUROC: {auroc:.4f}")
+        print(f"AP: {ap:.4f}")
+
+    return auroc, ap
+
+
+def evaluate_pixel_wise(predictions, targets, ap=True, dice=True, proauc=True,
              n_thresh_dice=100):
     if ap:
         ap = compute_average_precision(predictions, targets)
-        print(f"Average Precision: {ap:.4f}")
+        print(f"AP: {ap:.4f}")
     else:
         ap = 0.0
 
@@ -253,3 +306,56 @@ def evaluate(predictions, targets, ap=True, dice=True, proauc=True,
         )
 
     return ap, dice, th
+
+
+def full_evaluation_sample(predictions, targets, anomalies):
+    """Perform the full sample-wise evaluation for every anomaly type
+
+    Args:
+        predictions (torch.Tensor): Predicted labels, shape [n]
+        targets (torch.Tensor): Target labels, shape [n]
+        anomalies (list of str): Anomaly types, len = n
+    """
+    unique_anomalies = set(anomalies)
+    unique_anomalies.discard("normal")
+
+    for anomaly in sorted(unique_anomalies):
+        print(f"\nEvaluating performance on {anomaly}")
+
+        # Filter only relevant anomalies (and "normal")
+        considered = [anomaly, "normal"]
+        p = torch.tensor([m for m, a in zip(predictions, anomalies) if a in considered])
+        t = torch.tensor([l for l, a in zip(targets, anomalies) if a in considered])
+
+        # Evaluate sample-wise
+        evaluate_sample_wise(p, t, verbose=True)
+
+    print("\nEvaluating total performance")
+    evaluate_sample_wise(predictions, targets, verbose=True)
+
+
+def full_evaluation_pixel(predictions, targets, anomalies):
+    """Perform the full sample-wise evaluation for every anomaly type
+
+    Args:
+        predictions (torch.Tensor): Predicted anomaly maps, shape [n, slices, w, h]
+        targets (torch.Tensor): Target segmentations, shape [n, slices, w, h]
+        anomalies (list of str): Anomaly types, len = n
+    """
+    unique_anomalies = set(anomalies)
+    unique_anomalies.discard("normal")
+
+    for anomaly in sorted(unique_anomalies):
+        print(f"\nEvaluating performance on {anomaly}")
+
+        # Filter only relevant anomalies
+        p = torch.cat([m for m, a in zip(predictions, anomalies) if a == anomaly])
+        t = torch.cat([l for l, a in zip(targets, anomalies) if a == anomaly])
+
+        # Evaluate sample-wise
+        evaluate_pixel_wise(p, t)
+
+    print("\nEvaluating total performance")
+    _, _, th = evaluate_pixel_wise(predictions, targets)
+
+    return th

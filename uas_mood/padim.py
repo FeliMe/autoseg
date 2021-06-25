@@ -193,7 +193,7 @@ def test(args, extractor, test_files):
         )
 
     print("\nEvaluating total performance")
-    _, _, th = evaluation.evaluate(
+    _, _, th = evaluation.evaluate_pixel_wise(
         predictions=anomaly_maps,
         targets=segmentations,
     )
