@@ -267,6 +267,7 @@ if __name__ == '__main__':
         cnn_layers=args.cnn_layers,
         img_size=args.img_size,
         upsample="nearest",
+        is_agg=False,
         featmap_size=args.img_size // 4,
         keep_feature_prop=(200 / 448)
     ).to(args.device)

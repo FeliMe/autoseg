@@ -40,7 +40,8 @@ class PreloadDataset(Dataset):
         with Pool(processes=num_cpus) as pool:
             res = pool.starmap(
                 self.load_batch,
-                zip(batches, [img_size for _ in batches], [slices_lower_upper for _ in batches])
+                zip(batches, [img_size for _ in batches],
+                    [slices_lower_upper for _ in batches])
             )
 
         return res
@@ -91,12 +92,12 @@ class TestDataset(PreloadDataset):
         for f in files:
             # Samples are shape [width, height, slices]
             samples.append((f, process_scan(f, img_size, equalize_hist=True,
-                                        slices_lower_upper=slices_lower_upper)))
-            # Load segmentation
-            f_seg = f.split(".nii.gz")[0] + "_segmentation.nii.gz"
+                                            slices_lower_upper=slices_lower_upper)))
+            # Load segmentation, is in folder test_label/pixel instead of test
+            f_seg = f.replace("test", "test_label/pixel")
             segmentations.append(
                 (f_seg, load_segmentation(f_seg, img_size,
-                                  slices_lower_upper=slices_lower_upper)))
+                                          slices_lower_upper=slices_lower_upper)))
 
         return {
             "samples": samples,
@@ -147,9 +148,11 @@ class PatchSwapDataset(PreloadDataset):
         offset = (1 - core_percent) * d / 2
 
         # Create patch
-        patch_center = [round(random.uniform(core - offset, core + offset)) for _ in range(2)]
+        patch_center = [round(random.uniform(
+            core - offset, core + offset)) for _ in range(2)]
         patch_size = round(random.uniform(0.1 * d, 0.4 * d))
-        patch = create_patch(patch_size=patch_size, patch_center=patch_center, size=img1.shape)
+        patch = create_patch(patch_size=patch_size,
+                             patch_center=patch_center, size=img1.shape)
         patch = torch.from_numpy(patch)
 
         # Sample interpolation factor alpha
@@ -160,10 +163,10 @@ class PatchSwapDataset(PreloadDataset):
 
         # Swap sample at patch
         patch_idx = patch.nonzero(as_tuple=True)
-        img1[patch_idx] = (1 - alpha) * img1[patch_idx] + alpha * img2[patch_idx]
+        img1[patch_idx] = (1 - alpha) * img1[patch_idx] + \
+            alpha * img2[patch_idx]
 
         return img1, patch
-
 
     def __getitem__(self, idx):
         # Select sample
@@ -185,7 +188,7 @@ class PatchSwapDataset(PreloadDataset):
         return sample, patch
 
 
-def get_train_files(root : str, body_region : str):
+def get_train_files(root: str, body_region: str):
     """Return all training files
 
     Args:
@@ -196,7 +199,7 @@ def get_train_files(root : str, body_region : str):
     return glob(f"{os.path.join(root, body_region, 'train')}/?????.nii.gz")
 
 
-def get_test_files(root : str, body_region : str):
+def get_test_files(root: str, body_region: str):
     """Return all validation or test files
 
     Args:
@@ -206,7 +209,8 @@ def get_test_files(root : str, body_region : str):
     """
     assert body_region in ["brain", "abdom"]
 
-    all_files = glob(f"{os.path.join(root, body_region, 'test')}/?????_*.nii.gz")
+    all_files = glob(
+        f"{os.path.join(root, body_region, 'test')}/?????_*.nii.gz")
     files = []
     for f in all_files:
         if not f.endswith("_segmentation.nii.gz"):
@@ -233,7 +237,8 @@ if __name__ == '__main__':
     # print(x[1].shape, y[1].shape)
 
     # ----- PatchSwapDataset -----
-    ds = PatchSwapDataset(train_files[:10], 128, slices_lower_upper=[127, 131], data="brain")
+    ds = PatchSwapDataset(train_files[:10], 128, slices_lower_upper=[
+                          127, 131], data="brain")
     for x, y in ds:
         print(x.shape)
         print(y.shape, y.min(), y.max())

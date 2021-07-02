@@ -1,15 +1,48 @@
 from datetime import datetime
 import math
 from numbers import Number
+import os
+import warnings
 
 import numpy as np
+import psutil
 from skimage import measure
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-def printer(msg : str, verbose : bool):
+def write_file(path: str, msg: str):
+    with open(path, "w") as f:
+        f.write(msg)
+
+
+def folder_size(start_path='.'):
+    """Recursively gets the size of a folder and its subdirectories in bytes"""
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(start_path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            # skip if it is symbolic link
+            if not os.path.islink(fp):
+                total_size += os.path.getsize(fp)
+
+    return total_size
+
+
+def filelist_size(files):
+    """Returns the size of all elements in a list of files"""
+    return sum(os.path.getsize(f) for f in files)
+
+
+def check_ram(files):
+    ds_size = filelist_size(files)
+    free_ram = psutil.virtual_memory()[4]
+    if ds_size > free_ram:
+        warnings.warn("Your dataset is larger than your available RAM.")
+
+
+def printer(msg: str, verbose: bool):
     if verbose:
         print(msg)
 

@@ -91,8 +91,9 @@ class Extractor(nn.Module):
         backbone="resnet18",
         cnn_layers=RESNETLAYERS,
         upsample="nearest",
-        featmap_size=64,  # Before convolving
+        featmap_size=64,  # Before Interpolation
         img_size=256,
+        is_agg=False,  # True for fae, False for PaDiM
         keep_feature_prop=1.0,
     ):
         super().__init__()
@@ -101,14 +102,23 @@ class Extractor(nn.Module):
         self.featmap_size = featmap_size
         self.img_size = img_size
         self.upsample = upsample
+        self.is_agg = is_agg
         self.align_corners = True if upsample == "bilinear" else None
 
         # Find out how many channels we got from the backbone
         c_out = self._get_out_channels()
 
+        # Calculate size of output feature maps
+        if self.is_agg:
+            self.out_size = self.featmap_size // 4
+        else:
+            self.out_size = self.featmap_size
+
         # Create mask to drop random features_channels
         self.feature_mask = torch.Tensor(c_out).uniform_() < keep_feature_prop
         self.c_out = self.feature_mask.sum().item()
+
+        self.feat_agg = nn.MaxPool2d(kernel_size=4, stride=4)
 
     def _get_out_channels(self):
         device = next(self.backbone.parameters()).device
@@ -127,10 +137,14 @@ class Extractor(nn.Module):
 
         features = []
         for _, feat_map in feat_maps.items():
-            # Resizing
+            # Resizing, shape [b, c_out, featmap_size, featmap_size]
             feat_map = F.interpolate(feat_map, size=self.featmap_size,
                                      mode=self.upsample,
                                      align_corners=self.align_corners)
+
+            if self.is_agg:
+                # shape [b, c_out, featmap_size // 4, featmap_size // 4]
+                feat_map = self.feat_agg(feat_map)
 
             features.append(feat_map)
 

@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from uas_mood.utils.artificial_anomalies import create_random_anomaly
 from uas_mood.utils.data_utils import load_nii, save_nii
+from uas_mood.utils.utils import write_file
 
 """ Global variables """
 
@@ -97,7 +98,7 @@ def sanity_check():
 def split_ds(root):
     # Init names
     train_folder = os.path.join(root, "train")
-    test_folder = os.path.join(root, "test")
+    test_folder = os.path.join(root, "test_raw")
 
     # Create val- and test-folder
     os.makedirs(test_folder, exist_ok=True)
@@ -117,15 +118,20 @@ def split_ds(root):
     print(f"Moved {len(test_files)} fo {test_folder}")
 
 
-def create_test_anomalies(root):
+def create_test_anomalies(root_dir, target_dir, segmentation_dir, label_dir):
     counts = defaultdict(int)
-    files = sorted(glob(f"{root}/?????.nii.gz"))
+    files = sorted(glob(f"{root_dir}/?????.nii.gz"))
     n_files = len(files)
 
     random.shuffle(files)
     normal_idx = round(n_files * TESTNORMALFRAC)
     normal_files = files[:normal_idx]
     anomal_files = files[normal_idx:]
+
+    # Create target_dir and segmentation_dir
+    os.makedirs(target_dir, exist_ok=True)
+    os.makedirs(segmentation_dir, exist_ok=True)
+    os.makedirs(label_dir, exist_ok=True)
 
     # Create files without anomalies
     print("Creating files without anomalies")
@@ -135,10 +141,13 @@ def create_test_anomalies(root):
         # Segmentation is all 0
         segmentation = np.zeros_like(volume)
         # Save
-        target = f"{f.split('.nii.gz')[0]}_normal.nii.gz"
-        seg_target = f"{f.split('.nii.gz')[0]}_normal_segmentation.nii.gz"
-        save_nii(target, volume, affine, dtype= "float32")
-        save_nii(seg_target, segmentation, affine, dtype= "short")
+        name = f.split('/')[-1].split(':')[0]
+        target = os.path.join(target_dir, f"{name}_normal.nii.gz")
+        seg_target = os.path.join(segmentation_dir, f"{name}_normal.nii.gz")
+        label_target = os.path.join(label_dir, f"{name}_normal.nii.gz.txt")
+        save_nii(target, volume, affine, dtype="float32")
+        save_nii(seg_target, segmentation, affine, dtype="short")
+        write_file(label_target, str(0))
 
     # Create files with anomalies
     print("Creating files with anomalies")
@@ -147,15 +156,21 @@ def create_test_anomalies(root):
         # Load volume
         volume, affine = load_nii(f, dtype="float64")
         # Create anomaly
-        anomaly, segmentation, anomaly_type, _, _ = create_random_anomaly(volume)
+        anomaly, segmentation, anomaly_type, _, _ = create_random_anomaly(
+            volume)
         # Update statistics
         pbar.set_description(anomaly_type)
         counts[anomaly_type] += 1
         # Save
-        target = f"{f.split('.nii.gz')[0]}_{anomaly_type}.nii.gz"
-        seg_target = f"{f.split('.nii.gz')[0]}_{anomaly_type}_segmentation.nii.gz"
-        save_nii(target, anomaly, affine, dtype= "float32")
-        save_nii(seg_target, segmentation, affine, dtype= "short")
+        name = f.split('/')[-1].split(':')[0]
+        target = os.path.join(target_dir, f"{name}_{anomaly_type}.nii.gz")
+        seg_target = os.path.join(
+            segmentation_dir, f"{name}_{anomaly_type}.nii.gz")
+        label_target = os.path.join(
+            label_dir, f"{name}_{anomaly_type}.nii.gz.txt")
+        save_nii(target, anomaly, affine, dtype="float32")
+        save_nii(seg_target, segmentation, affine, dtype="short")
+        write_file(label_target, str(1))
 
     for k, v in counts.items():
         print(f"{k}: absolute {v}, relative {v / n_files:.3f}")
@@ -165,7 +180,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--split", action="store_true")
     parser.add_argument("--create_anomalies", action="store_true")
-    parser.add_argument("--data", type=str, choices=["brain", "abdom"], required=True)
+    parser.add_argument("--data", type=str,
+                        choices=["brain", "abdom"], required=True)
     args = parser.parse_args()
 
     seed = 0
@@ -185,7 +201,15 @@ if __name__ == '__main__':
     if args.create_anomalies:
         if args.data == "abdom":
             print("Creating artificial anomalies for abdomen test")
-            create_test_anomalies(os.path.join(ABDOMROOT, "test"))
+            create_test_anomalies(os.path.join(ABDOMROOT, "test_raw"),
+                                  os.path.join(ABDOMROOT, "test"),
+                                  os.path.join(
+                                      ABDOMROOT, "test_label", "pixel"),
+                                  os.path.join(ABDOMROOT, "test_label", "sample"))
         else:
             print("Creating artificial anomalies for brain test")
-            create_test_anomalies(os.path.join(BRAINROOT, "test"))
+            create_test_anomalies(os.path.join(BRAINROOT, "test_raw"),
+                                  os.path.join(BRAINROOT, "test"),
+                                  os.path.join(
+                                      BRAINROOT, "test_label", "pixel"),
+                                  os.path.join(BRAINROOT, "test_label", "sample"))

@@ -12,13 +12,15 @@ from ray import tune
 import torch
 from torch.utils.data import DataLoader
 
-from uas_mood.models.models import WideResNetAE
+from uas_mood import pytorch_ssim
+from uas_mood.models.fae import FeatureAE
 from uas_mood.utils import evaluation, utils
 from uas_mood.utils.data_utils import volume_viewer
 from uas_mood.utils.dataset import (
     MOODROOT,
     PatchSwapDataset,
     TestDataset,
+    TrainDataset,
     get_test_files,
     get_train_files,
 )
@@ -33,23 +35,30 @@ class LitModel(pl.LightningModule):
         self.args = args
 
         # Network
-        if args.model == "unet":
-            print("Using UNet")
-            self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
-                                      'unet', in_channels=1, out_channels=1,
-                                      init_features=32, pretrained=False,
-                                      verbose=False)
-        else:
-            print("Using Wide ResNet")
-            self.net = WideResNetAE(inp_size=args.img_size,
-                                    widen_factor=args.model_width)
+        self.net = FeatureAE(
+            img_size=args.img_size,
+            c_z=args.z_dim,
+            ks=args.kernel_size,
+            use_batchnorm=True,
+        )
 
         # Example input array needed to log the graph in tensorboard
         self.example_input_array = torch.randn(
             [5, 1, args.img_size, args.img_size])
 
-        # Init Loss function
-        self.loss_fn = torch.nn.BCELoss()
+        # Select loss function
+        print(f"Using {args.loss_fn} as a loss function")
+        if args.loss_fn == "L2":
+            self.loss_fn = torch.nn.MSELoss(reduction='mean')
+            self.anomaly_fn = torch.nn.MSELoss(reduction='none')
+        elif args.loss_fn == "L1":
+            self.loss_fn = torch.nn.L1Loss(reduction='mean')
+            self.anomaly_fn = torch.nn.L1Loss(reduction='none')
+        elif args.loss_fn == "SSIM":
+            self.loss_fn = pytorch_ssim.SSIMLoss(size_average=True)
+            self.anomaly_fn = pytorch_ssim.SSIMLoss(size_average=False)
+        else:
+            raise NotImplementedError(f"{args.loss_fn} is not implemented")
 
         if self.logger:
             self.logger.log_hyperparams(self.args)
@@ -73,6 +82,13 @@ class LitModel(pl.LightningModule):
             self.log(name, value, logger=True)
         if self.args.hparam_search:
             tune.report(value)
+
+    def compute_anomaly_map(self, rec, feats):
+        anomaly_map = torch.mean(self.anomaly_fn(rec, feats),
+                                 dim=1, keepdim=True)
+        anomaly_map = F.interpolate(anomaly_map, size=self.args.img_size,
+                                    mode="bilinear", align_corners=True)
+        return anomaly_map
 
     @staticmethod
     def stack_outputs(outputs):
@@ -110,12 +126,12 @@ class LitModel(pl.LightningModule):
         # Return
         return fig
 
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-        pred = self(x)
+    def training_step(self, x, batch_idx):
+        # Forward slice
+        feats, feats_rec = self(x)
 
         # Compute loss
-        loss = self.loss_fn(pred, y)
+        loss = self.loss_fn(feats_rec, feats).mean()
 
         return {"loss": loss}
 
@@ -124,24 +140,28 @@ class LitModel(pl.LightningModule):
         out = self.stack_outputs(outputs)
 
         # Print training epoch summary
-        self.print_(
-            f"Epoch [{self.current_epoch + 1}/{self.args.max_epochs}] Train - loss: {out['loss'].mean():.4f}")
+        self.print_(f"Epoch [{self.current_epoch + 1}/{self.args.max_epochs}] Train - loss: {out['loss'].mean():.4f}")
 
         # Tensorboard logs
         self.log_metric("train_loss", out["loss"].mean())
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        pred = self(x)
+
+        # Forward slice
+        feats, feats_rec = self(x)
 
         # Compute loss
-        loss = self.loss_fn(pred, y)
+        loss = self.loss_fn(feats_rec, feats).mean()
+
+        # Get an anomaly map
+        anomaly_map = self.compute_anomaly_map(feats_rec, feats)
 
         return {
-            "inp": x.cpu(),
+            "inp":  x.cpu(),
             "target_seg": y.cpu(),
             "loss": loss,
-            "anomaly_map": pred.cpu(),
+            "anomaly_map": anomaly_map.cpu(),
         }
 
     def validation_epoch_end(self, outputs):
@@ -189,21 +209,22 @@ class LitModel(pl.LightningModule):
         name = x[0]
         anomaly = name.split('/')[-1].split(".nii.gz")[0][6:]
 
-        # x was a tuple of (file_name, volume [slices, w, h])
-        x = x[1].unsqueeze(1)
-        # y was a tuple of (file_name, volume [slices, w, h])
-        y = y[1].unsqueeze(1)
-        pred = self(x)
+        x = x[1].unsqueeze(1)  # x was a tuple of (file_name, volume [slices, w, h])
+        y = y[1].unsqueeze(1)  # y was a tuple of (file_name, volume [slices, w, h])
+        feats, feats_rec = self(x)
 
         # Compute loss
-        loss = self.loss_fn(pred, y.float())
+        loss = self.loss_fn(feats_rec, feats).mean()
+
+        # Get an anomaly map
+        anomaly_map = self.compute_anomaly_map(feats_rec, feats)
 
         return {
-            "inp": x.cpu(),
+            "inp":  x.cpu(),
             "anomaly": anomaly,
             "target_seg": y.cpu(),
             "loss": loss,
-            "anomaly_map": pred.cpu(),
+            "anomaly_map": anomaly_map.cpu(),
         }
 
     def test_epoch_end(self, outputs):
@@ -245,20 +266,15 @@ class LitModel(pl.LightningModule):
             unique_anomalies = set(anomalies)
             unique_anomalies.discard("normal")
             for anomaly in unique_anomalies:
-                print(
-                    f"Writing test sample images of {anomaly} to tensorboard")
+                print(f"Writing test sample images of {anomaly} to tensorboard")
                 # Filter only relevant anomalies
-                x = torch.cat(
-                    [m for m, a in zip(inp, anomalies) if a == anomaly])
-                p = torch.cat(
-                    [m for m, a in zip(pred, anomalies) if a == anomaly])
-                b = torch.cat(
-                    [m for m, a in zip(bin_map, anomalies) if a == anomaly])
-                t = torch.cat(
-                    [m for m, a in zip(target_seg, anomalies) if a == anomaly])
+                x = torch.cat([m for m, a in zip(inp, anomalies) if a == anomaly])
+                p = torch.cat([m for m, a in zip(pred, anomalies) if a == anomaly])
+                b = torch.cat([m for m, a in zip(bin_map, anomalies) if a == anomaly])
+                t = torch.cat([m for m, a in zip(target_seg, anomalies) if a == anomaly])
 
                 # Shuffle before plotting
-                perm = torch.randperm(len(x))
+                perm= torch.randperm(len(x))
                 x = x[perm]
                 p = p[perm]
                 b = b[perm]
@@ -285,23 +301,20 @@ class LitModel(pl.LightningModule):
                     titles=titles,
                     n_images=10
                 )
-                tb.add_figure(
-                    f"Test samples {anomaly}", fig, global_step=self.global_step)
+                tb.add_figure(f"Test samples {anomaly}", fig, global_step=self.global_step)
 
             # Log precision-recall curve to tensorboard
             fig = evaluation.plot_prc(
                 predictions=out["anomaly_map"],
                 targets=target_seg
             )
-            tb.add_figure("Precision-Recall Curve", fig,
-                          global_step=self.global_step)
+            tb.add_figure("Precision-Recall Curve", fig, global_step=self.global_step)
 
 
 def train(args, trainer, train_files):
     # Init lighning model
     if args.model_ckpt:
-        utils.printer(
-            f"Restoring checkpoint from {args.model_ckpt}", args.verbose)
+        utils.printer(f"Restoring checkpoint from {args.model_ckpt}", args.verbose)
         model = LitModel.load_from_checkpoint(args.model_ckpt, args=args)
     else:
         model = LitModel(args)
@@ -314,10 +327,6 @@ def train(args, trainer, train_files):
     utils.printer("Loading training data", args.verbose)
     t_start = time()
 
-    # Check if enough RAM available
-    if args.load_to_ram:
-        utils.check_ram(train_files)
-
     # Split into train- and val-files
     random.shuffle(train_files)
     split_idx = int((1 - args.val_fraction) * len(train_files))
@@ -325,17 +334,15 @@ def train(args, trainer, train_files):
     val_files = train_files[split_idx:]
 
     # Create Datasets and Dataloaders
-    train_ds = PatchSwapDataset(training_files, args.img_size,
-                                args.slices_lower_upper, data=args.data)
+    train_ds = TrainDataset(training_files, args.img_size, args.slices_lower_upper)
     trainloader = DataLoader(train_ds, batch_size=args.batch_size,
                              num_workers=args.num_workers)
-    val_ds = PatchSwapDataset(val_files, args.img_size,
-                              args.slices_lower_upper, data=args.data)
+    val_ds = PatchSwapDataset(val_files, args.img_size, args.slices_lower_upper,
+                              data=args.data)
     valloader = DataLoader(val_ds, batch_size=args.batch_size,
                            num_workers=args.num_workers, shuffle=True)
 
-    utils.printer(
-        f"Finished loading training data in {time() - t_start:.2f}s", args.verbose)
+    utils.printer(f"Finished loading training data in {time() - t_start:.2f}s", args.verbose)
 
     # Train
     model.start_time = time()
@@ -355,10 +362,6 @@ def test(args, trainer, test_files, model=None):
         print(f"Restoring checkpoint from {args.model_ckpt}")
         model = LitModel.load_from_checkpoint(args.model_ckpt, args=args)
 
-    # Check if enough RAM available
-    if args.load_to_ram:
-        utils.check_ram(test_files)
-
     # Load data
     print("Loading data")
     t_start = time()
@@ -373,6 +376,8 @@ def test(args, trainer, test_files, model=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # General script control params
+    parser.add_argument("--loss_fn", type=str, default='SSIM',
+                        choices=["L2", "L1", "SSIM"])
     parser.add_argument("--no_train", dest="train", action="store_false")
     parser.add_argument("--no_test", dest="test", action="store_false")
     parser.add_argument("--debug", action="store_true", default=False)
@@ -385,7 +390,7 @@ if __name__ == '__main__':
                         choices=["brain", "abdom"])
     parser.add_argument("--img_size", type=int, default=128)
     parser.add_argument('--slices_lower_upper',
-                        nargs='+', type=int, default=[23, 200])
+                         nargs='+', type=int, default=[23, 200])
     # parser.add_argument('--slices_lower_upper',
     #                     nargs='+', type=int, default=[79, 83])
     # Engineering params
@@ -402,12 +407,15 @@ if __name__ == '__main__':
     parser.add_argument("--gpu_per_trial", type=float, default=0.25)
     parser.add_argument("--target_metric", type=str, default="ap")
     # Model params
-    parser.add_argument("--model", type=str, choices=["unet", "resnet"],
-                        default="unet")
-    parser.add_argument("--model_width", type=int, default=4)
+    parser.add_argument("--zdim", type=int, default=143)
+    parser.add_argument("--kernel_size", type=int, default=3)
+    parser.add_argument("--backbone", type=str, default="resnet18")
+    parser.add_argument("--cnn_layers", type=str, nargs='+',
+                        default=['layer1', 'layer2', 'layer3'])
+    parser.add_argument("--keep_feature_prop", type=float, default=1.0)
     # Real Hyperparameters
     parser.add_argument("--max_epochs", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -439,7 +447,7 @@ if __name__ == '__main__':
         callbacks = []
     else:
         logger = TensorBoardLogger(
-            args.log_dir, name="patch_interpolation", log_graph=True)
+            args.log_dir, name="fae", log_graph=True)
         # Add a ModelCheckpoint callback. Always log last ckpt and best train
         callbacks = [ModelCheckpoint(monitor=args.target_metric, mode='max',
                                      save_last=True)]
