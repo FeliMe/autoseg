@@ -16,7 +16,7 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
         initial_position (list or tuple of len 3): (Optional)
         slices_first (bool): If slices are first or last dimension in volume
     """
-    
+
     def remove_keymap_conflicts(new_keys_set):
         for prop in plt.rcParams:
             if prop.startswith('keymap.'):
@@ -110,18 +110,21 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
 
     # Volume shape [slices, h, w]
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    plot_ax(ax[0], volume, initial_position[2], "axial")  # axial [slices, h, w]
-    plot_ax(ax[1], volume.permute(1, 0, 2), initial_position[1], "coronal")  # saggital [h, slices, w]
-    plot_ax(ax[2], volume.permute(2, 0, 1), initial_position[0], "saggital")  # coronal [w, slices, h]
+    plot_ax(ax[0], volume, initial_position[2],
+            "axial")  # axial [slices, h, w]
+    plot_ax(ax[1], volume.permute(1, 0, 2), initial_position[1],
+            "coronal")  # saggital [h, slices, w]
+    plot_ax(ax[2], volume.permute(2, 0, 1), initial_position[0],
+            "saggital")  # coronal [w, slices, h]
     fig.canvas.mpl_connect('key_press_event', process_key)
-    print("Plotting volume, navigate:" \
-            "\naxial with 'j', 'k'" \
-            "\ncoronal with 'u', 'i'" \
-            "\nsaggital with 'h', 'l'")
+    print("Plotting volume, navigate:"
+          "\naxial with 'j', 'k'"
+          "\ncoronal with 'u', 'i'"
+          "\nsaggital with 'h', 'l'")
     plt.show()
 
 
-def load_nii(path: str, size: int = None, dtype : str = "float32"):
+def load_nii(path: str, size: int = None, dtype: str = "float32"):
     """Load a neuroimaging file with nibabel, [w, h, slices]
     https://nipy.org/nibabel/reference/nibabel.html
 
@@ -137,16 +140,19 @@ def load_nii(path: str, size: int = None, dtype : str = "float32"):
     """
     # Load file
     data = nib.load(path, keep_file_open=False)
-    volume = data.get_fdata(caching='unchanged', dtype=np.dtype(dtype))  # [w, h, slices]
+    volume = data.get_fdata(caching='unchanged')  # [w, h, slices]
     affine = data.affine
 
     # Squeeze optional 4th dimension
     if volume.ndim == 4:
         volume = volume.squeeze(-1)
 
-    # Resize if size is given
-    if size is not None:
-        volume = resize(volume, [size, size, volume.shape[0]])
+    # Resize if size is given and if necessary
+    if size is not None and (volume.shape[0] != size or volume.shape[1] != size):
+        order = 1 if "float" in dtype else 0
+        volume = resize(volume, [size, size, volume.shape[-1]], order=order)
+
+    volume = volume.astype(np.dtype(dtype))
 
     return volume, affine
 
@@ -170,8 +176,8 @@ def histogram_equalization(volume):
     return volume
 
 
-def process_scan(path : str, size : int = None, equalize_hist : bool = True,
-                 slices_lower_upper = None):
+def process_scan(path: str, size: int = None, equalize_hist: bool = True,
+                 slices_lower_upper=None):
     """Load and pre-process a medical 3D scan
 
     Args:
@@ -194,18 +200,21 @@ def process_scan(path : str, size : int = None, equalize_hist : bool = True,
 
     # Pre-processing
     if equalize_hist:
-        volume = histogram_equalization(volume)
+        # volume = histogram_equalization(volume)
+        pass
 
     volume = torch.from_numpy(volume)
 
     # convert from [w, h, slices] to [slices, w, h]
+    # primary axis will be put first, 2 for brain, 1 for abdomen
+    # volume = np.rollaxis(volume, primary_axis)
     volume = volume.permute(2, 0, 1)
 
     return volume
 
 
-def load_segmentation(path : str, size : int = None, bin_threshold : float = 0.4,
-                      slices_lower_upper = None):
+def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4,
+                      slices_lower_upper=None):
     """Load a segmentation file
 
     Args:
@@ -234,7 +243,8 @@ def load_segmentation(path : str, size : int = None, bin_threshold : float = 0.4
 
 if __name__ == '__main__':
     path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift_segmentation.nii.gz"
-    segmentation = load_segmentation(path, slices_lower_upper=[23, 200], size=128)
+    segmentation = load_segmentation(
+        path, slices_lower_upper=[23, 200], size=128)
     path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
     volume = process_scan(path, size=128, slices_lower_upper=[23, 200])
     print(volume.shape)

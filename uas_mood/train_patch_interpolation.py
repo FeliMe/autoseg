@@ -11,10 +11,11 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from ray import tune
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from uas_mood.models.models import WideResNetAE
 from uas_mood.utils import evaluation, utils
-from uas_mood.utils.data_utils import volume_viewer
+from uas_mood.utils.data_utils import volume_viewer, save_nii
 from uas_mood.utils.dataset import (
     MOODROOT,
     PatchSwapDataset,
@@ -23,6 +24,25 @@ from uas_mood.utils.dataset import (
     get_train_files,
 )
 from uas_mood.utils.hparam_search import hparam_search
+
+
+class LitProgressBar(pl.callbacks.progress.ProgressBar):
+    def init_validation_tqdm(self):
+        return tqdm(disable=True)
+
+
+def plot(volumes, i_slice):
+    if not isinstance(volumes, list):
+        volumes = [volumes]
+    for vol in volumes:
+        assert vol.ndim == 3
+    n = len(volumes)
+    fig = plt.figure(figsize=(4 * n, 4))
+    plt.axis("off")
+    for i, vol in enumerate(volumes):
+        fig.add_subplot(1, n, i + 1)
+        plt.imshow(vol[i_slice], cmap="gray", vmin=0., vmax=1.)
+    plt.show()
 
 
 class LitModel(pl.LightningModule):
@@ -45,8 +65,16 @@ class LitModel(pl.LightningModule):
                                     widen_factor=args.model_width)
 
         # Example input array needed to log the graph in tensorboard
+        input_size = (1, args.img_size, args.img_size)
         self.example_input_array = torch.randn(
-            [5, 1, args.img_size, args.img_size])
+            [5, *input_size])
+
+        # Print model summary
+        # from torchsummary import summary
+        # print(summary(self.net, input_size=input_size, device="cpu"))
+        # import IPython
+        # IPython.embed()
+        # exit(1)
 
         # Init Loss function
         self.loss_fn = torch.nn.BCELoss()
@@ -59,7 +87,9 @@ class LitModel(pl.LightningModule):
         return self.net(x)
 
     def configure_optimizers(self):
-        opt = torch.optim.AdamW(self.parameters(), lr=self.args.lr)
+        opt = torch.optim.Adam(
+            self.parameters(), lr=self.args.lr, weight_decay=0.5 * 0.0005)
+        # opt = torch.optim.AdamW(self.parameters(), lr=self.args.lr, weight_decay=0.5 * 0.0005)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9995)
         # return [opt], [scheduler]
         return [opt]
@@ -125,7 +155,7 @@ class LitModel(pl.LightningModule):
 
         # Print training epoch summary
         self.print_(
-            f"Epoch [{self.current_epoch + 1}/{self.args.max_epochs}] Train - loss: {out['loss'].mean():.4f}")
+            f"Epoch [{self.current_epoch}/{self.args.max_epochs}] Train loss: {out['loss'].mean():.4f}")
 
         # Tensorboard logs
         self.log_metric("train_loss", out["loss"].mean())
@@ -145,8 +175,7 @@ class LitModel(pl.LightningModule):
         }
 
     def validation_epoch_end(self, outputs):
-        self.print_("Validating")
-        val_start = time()
+        # val_start = time()
         # Stack all values to a dict
         out = self.stack_outputs(outputs)
 
@@ -174,13 +203,14 @@ class LitModel(pl.LightningModule):
             self.start_time, self.current_epoch, self.args.max_epochs
         )
         # Print validation summary
-        self.print_(f"Time for validation: {time() - val_start:.2f}s")
-        self.print_(f"Epoch [{self.current_epoch}|{self.args.max_epochs}]"
-                    f"\nTime elapsed: {time_elapsed}, "
+        self.print_(
+            f"Pred max: {out['anomaly_map'].max()}, pred min: {out['anomaly_map'].min()}")
+        # self.print_(f"Time for validation: {time() - val_start:.2f}s")
+        self.print_(f"Val loss: {out['loss'].mean():.4f}, "
+                    f"average precision val: {ap:.4f}\n"
+                    f"Time elapsed: {time_elapsed}, "
                     f"Time left: {time_left}, "
-                    f"Time per epoch: {time_per_epoch}"
-                    f"\nVal - loss: {out['loss'].mean():.4f}, "
-                    f"average precision: {ap:.4f}")
+                    f"Time per epoch: {time_per_epoch}")
 
     def test_step(self, batch, batch_idx):
         x, y = batch
@@ -200,8 +230,9 @@ class LitModel(pl.LightningModule):
 
         return {
             "inp": x.cpu(),
-            "anomaly": anomaly,
             "target_seg": y.cpu(),
+            "name": name,
+            "anomaly": anomaly,
             "loss": loss,
             "anomaly_map": pred.cpu(),
         }
@@ -323,6 +354,7 @@ def train(args, trainer, train_files):
     split_idx = int((1 - args.val_fraction) * len(train_files))
     training_files = train_files[:split_idx]
     val_files = train_files[split_idx:]
+    utils.printer(f"Training with {len(training_files)} files", args.verbose)
 
     # Create Datasets and Dataloaders
     train_ds = PatchSwapDataset(training_files, args.img_size,
@@ -380,6 +412,8 @@ if __name__ == '__main__':
     parser.add_argument("--verbose", type=bool, default=True)
     parser.add_argument("--val_every_epoch", type=int, default=1)
     parser.add_argument("--val_fraction", type=int, default=0.1)
+    parser.add_argument("--no_load_to_ram", dest="load_to_ram",
+                        action="store_false")
     # Data params
     parser.add_argument("--data", type=str, default="brain",
                         choices=["brain", "abdom"])
@@ -403,10 +437,10 @@ if __name__ == '__main__':
     parser.add_argument("--target_metric", type=str, default="ap")
     # Model params
     parser.add_argument("--model", type=str, choices=["unet", "resnet"],
-                        default="unet")
+                        default="resnet")
     parser.add_argument("--model_width", type=int, default=4)
     # Real Hyperparameters
-    parser.add_argument("--max_epochs", type=int, default=50)
+    parser.add_argument("--max_epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
@@ -430,7 +464,7 @@ if __name__ == '__main__':
     # Get train and test paths
     train_files = get_train_files(MOODROOT, args.data)
     test_files = get_test_files(MOODROOT, args.data)
-    # train_files = train_files[:10]
+    # train_files = train_files[:50]
     # test_files = test_files[:10]
 
     # Init logger
@@ -443,6 +477,8 @@ if __name__ == '__main__':
         # Add a ModelCheckpoint callback. Always log last ckpt and best train
         callbacks = [ModelCheckpoint(monitor=args.target_metric, mode='max',
                                      save_last=True)]
+
+    callbacks.append(LitProgressBar())
 
     # Init trainer
     trainer = pl.Trainer(gpus=args.gpus,

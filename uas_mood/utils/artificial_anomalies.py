@@ -99,7 +99,8 @@ def noise_addition_anomaly(volume, mask):
 
     # Sample random noise
     intensity_range = np.max(volume) - np.min(volume)
-    intensity = np.random.uniform(0.05 * intensity_range, 0.3 * intensity_range, size=mask.shape)
+    intensity = np.random.uniform(
+        0.05 * intensity_range, 0.3 * intensity_range, size=mask.shape)
     intensity *= rand_sign()
 
     # Reduce noise to mask only
@@ -238,7 +239,7 @@ def sample_location(volume):
     dims = np.array(np.shape(volume))
     core = dims // 2  # width of core region
     offset = core // 2  # sampling range of center
-    rng = [slice(c - o, c + o) for c, o in zip(core, offset)]  # Sampling range
+    rng = [slice(o, c + o) for c, o in zip(core, offset)]  # Sampling range
 
     # Select a center from the nonzero pixels in volume
     if volume.shape[0] == 256:  # Brain
@@ -262,7 +263,7 @@ def sample_location(volume):
     return center
 
 
-def sample_location2(volume : np.ndarray):
+def sample_location2(volume: np.ndarray):
     # Get dimensions
     dims = np.array(np.shape(volume))
     core = dims // 2  # width of core region
@@ -270,8 +271,8 @@ def sample_location2(volume : np.ndarray):
 
     # Sample center of location
     center = []
-    for i,_ in enumerate(dims):
-        center.append(np.random.randint(offset[i],offset[i]+core[i]))
+    for i, _ in enumerate(dims):
+        center.append(np.random.randint(offset[i], offset[i]+core[i]))
 
     return center
 
@@ -340,9 +341,11 @@ def create_random_anomaly(volume, verbose=False):
     elif anomaly_type == "noise_addition":
         res, segmentation = noise_addition_anomaly(volume, sphere)
     elif anomaly_type == "sink_deformation":
-        res, segmentation = sink_deformation_anomaly(volume, sphere, center, radius)
+        res, segmentation = sink_deformation_anomaly(
+            volume, sphere, center, radius)
     elif anomaly_type == "source_deformation":
-        res, segmentation = source_deformation_anomaly(volume, sphere, center, radius)
+        res, segmentation = source_deformation_anomaly(
+            volume, sphere, center, radius)
     elif anomaly_type == "uniform_shift":
         res, segmentation = uniform_shift_anomaly(volume, sphere)
     else:
@@ -360,9 +363,12 @@ if __name__ == "__main__":
     volume, affine = load_nii(path)
     print(volume.min(), volume.max(), volume.mean())
 
-    anomal_sample, segmentation, _, center, _ = create_random_anomaly(volume, verbose=True)
+    anomal_sample, segmentation, _, center, _ = create_random_anomaly(
+        volume, verbose=True)
     print(anomal_sample.min(), anomal_sample.max(), anomal_sample.mean())
     print("Visualizing")
     volume_viewer(anomal_sample, initial_position=center)
     volume_viewer(segmentation, initial_position=center)
-    import IPython ; IPython.embed() ; exit(1)
+    import IPython
+    IPython.embed()
+    exit(1)

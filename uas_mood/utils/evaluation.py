@@ -1,3 +1,7 @@
+import argparse
+from glob import glob
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import savgol_filter
@@ -11,7 +15,7 @@ from sklearn.metrics import (
 import torch
 from torchvision.utils import make_grid
 
-from uas_mood.utils import utils
+from uas_mood.utils import utils, data_utils
 
 
 def plot_results(images: list, titles: list, n_images=20):
@@ -20,7 +24,6 @@ def plot_results(images: list, titles: list, n_images=20):
 
     if len(images) != len(titles):
         raise RuntimeError("not the same number of images and titles")
-
 
     # Stack tensors to image grid and transform to numpy for plotting
     img_dict = {}
@@ -230,7 +233,7 @@ def compute_average_precision(predictions, targets):
     """
     if (targets - targets.int()).sum() > 0.:
         raise RuntimeError("targets for AP must be binary")
-    ap = average_precision_score(targets.view(-1), predictions.view(-1))
+    ap = average_precision_score(targets.reshape(-1), predictions.reshape(-1))
     return ap
 
 
@@ -283,8 +286,8 @@ def evaluate_sample_wise(predictions, targets, verbose=True):
     return auroc, ap
 
 
-def evaluate_pixel_wise(predictions, targets, ap=True, dice=True, proauc=True,
-             n_thresh_dice=100):
+def evaluate_pixel_wise(predictions, targets, ap=True, dice=False, proauc=False,
+                        n_thresh_dice=100):
     if ap:
         ap = compute_average_precision(predictions, targets)
         print(f"AP: {ap:.4f}")
@@ -292,7 +295,8 @@ def evaluate_pixel_wise(predictions, targets, ap=True, dice=True, proauc=True,
         ap = 0.0
 
     if dice:
-        dice, th = compute_best_dice(predictions, targets, n_thresh=n_thresh_dice)
+        dice, th = compute_best_dice(
+            predictions, targets, n_thresh=n_thresh_dice)
         print(f"DSC: {dice:.4f}, best threshold: {th:.4f}")
     else:
         dice = 0.0
@@ -324,8 +328,10 @@ def full_evaluation_sample(predictions, targets, anomalies):
 
         # Filter only relevant anomalies (and "normal")
         considered = [anomaly, "normal"]
-        p = torch.tensor([m for m, a in zip(predictions, anomalies) if a in considered])
-        t = torch.tensor([l for l, a in zip(targets, anomalies) if a in considered])
+        p = torch.tensor(
+            [m for m, a in zip(predictions, anomalies) if a in considered])
+        t = torch.tensor(
+            [l for l, a in zip(targets, anomalies) if a in considered])
 
         # Evaluate sample-wise
         evaluate_sample_wise(p, t, verbose=True)
@@ -349,7 +355,8 @@ def full_evaluation_pixel(predictions, targets, anomalies):
         print(f"\nEvaluating performance on {anomaly}")
 
         # Filter only relevant anomalies
-        p = torch.cat([m for m, a in zip(predictions, anomalies) if a == anomaly])
+        p = torch.cat(
+            [m for m, a in zip(predictions, anomalies) if a == anomaly])
         t = torch.cat([l for l, a in zip(targets, anomalies) if a == anomaly])
 
         # Evaluate sample-wise
@@ -359,3 +366,54 @@ def full_evaluation_pixel(predictions, targets, anomalies):
     _, _, th = evaluate_pixel_wise(predictions, targets)
 
     return th
+
+
+def eval_dir(pred_dir, target_dir, mode):
+    # List files from dir
+    ext = "*.nii.gz" if mode == "pixel" else "*.txt"
+    pred_files = glob(os.path.join(pred_dir, ext))
+    target_files = glob(os.path.join(target_dir, ext))
+    print(
+        f"Found {len(pred_files)} predictions and {len(target_files)} targets.")
+    assert len(pred_files) == len(target_files)
+
+    # Get names of anomalies
+    anomalies = [f.split('/')[-1].split(".nii.gz")[0][6:]
+                 for f in target_files]
+    print(f"Found anomalies: {set(anomalies)}")
+
+    # Load from files
+    if mode == "pixel":
+        print("Reading nii files with predictions")
+        preds = np.stack([data_utils.load_nii(f)[0] for f in pred_files])
+        pred_img_size = preds[0].shape[-2]
+        print("Reading nii files with targets")
+        targets = np.stack([data_utils.load_nii(f, size=pred_img_size, dtype="short")[0]
+                            for f in target_files])
+        print(preds.shape, preds.dtype)
+        print(targets.shape, targets.dtype)
+        full_evaluation_pixel(predictions=torch.from_numpy(preds),
+                              targets=torch.from_numpy(targets),
+                              anomalies=anomalies)
+    elif mode == "sample":
+        preds = [float(utils.read_file(f)) for f in pred_files]
+        targets = [int(utils.read_file(f)) for f in target_files]
+        full_evaluation_sample(predictions=preds,
+                               targets=targets,
+                               anomalies=anomalies)
+    else:
+        raise NotImplementedError
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser("Evaluate from directories")
+    parser.add_argument("-i", "--input", type=str, required=True,
+                        help="Directory with predicted anomaly maps or labels")
+    parser.add_argument("-o", "--output", type=str, required=True,
+                        help="Directory with ground truth anomaly maps or labels")
+    parser.add_argument("-m", "--mode", type=str, required=True,
+                        help="Evaluation mode, choose between 'pixel' or 'sample'",
+                        choices=["pixel", "sample"])
+    args = parser.parse_args()
+
+    eval_dir(args.input, args.output, args.mode)

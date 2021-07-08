@@ -17,6 +17,12 @@ def write_file(path: str, msg: str):
         f.write(msg)
 
 
+def read_file(path: str):
+    with open(path, 'r') as f:
+        data = f.read().replace('\n', '')
+    return data
+
+
 def folder_size(start_path='.'):
     """Recursively gets the size of a folder and its subdirectories in bytes"""
     total_size = 0

@@ -19,6 +19,18 @@ assert DATAROOT is not None
 MOODROOT = os.path.join(DATAROOT, "MOOD")
 
 
+def plot(images):
+    if not isinstance(images, list):
+        images = [images]
+    n = len(images)
+    fig = plt.figure(figsize=(4 * n, 4))
+    plt.axis("off")
+    for i, im in enumerate(images):
+        fig.add_subplot(1, n, i + 1)
+        plt.imshow(im, cmap="gray", vmin=0., vmax=1.)
+    plt.show()
+
+
 class PreloadDataset(Dataset):
     def __init__(self):
         super().__init__()
@@ -142,31 +154,55 @@ class PatchSwapDataset(PreloadDataset):
             img1 (torch.Tensor): shape [w, h]
             img2 (torch.Tensor): shape [w, h]
         """
-        core_percent = 0.5 if self.data == "brain" else 0.8
         d = img1.shape[-1]
-        core = core_percent * d
-        offset = (1 - core_percent) * d / 2
+        back_val = 0. if self.data == "brain" else 1e-3
+
+        # Sample an index inside the object
+        obj_inds = torch.where(img1 > back_val)
+        if len(obj_inds[0]) == 0:
+            patch_center = [d // 2, d // 2]
+            patch_size = 1
+        else:
+            location_idx = random.randint(0, len(obj_inds[0]) - 1)
+            patch_center = [obj_inds[0][location_idx],
+                            obj_inds[1][location_idx]]
+            patch_size = round(random.uniform(0.1 * d, 0.4 * d))
+
+        # Sample location from core region
+        # core_percent = 0.5 if self.data == "brain" else 0.8
+        # core = core_percent * d
+        # offset = (1 - core_percent) * d / 2
+        # patch_center = [round(random.uniform(
+        #     offset, core + offset)) for _ in range(2)]
 
         # Create patch
-        patch_center = [round(random.uniform(
-            core - offset, core + offset)) for _ in range(2)]
-        patch_size = round(random.uniform(0.1 * d, 0.4 * d))
-        patch = create_patch(patch_size=patch_size,
-                             patch_center=patch_center, size=img1.shape)
-        patch = torch.from_numpy(patch)
+        patch_mask = create_patch(patch_size=patch_size,
+                                  patch_center=patch_center, size=img1.shape)
+        patch_mask = torch.from_numpy(patch_mask)
+        zero_mask = 1 - patch_mask
 
         # Sample interpolation factor alpha
         alpha = random.uniform(0.05, 0.95)
 
         # Target pixel value is also alpha
-        patch *= alpha
+        patch = patch_mask * alpha
+        patch_inv = patch_mask - patch
+
+        # Interpolate between patches
+        patch_set = patch * img1 + patch_inv * img2
+        patchex = img1 * zero_mask + patch_set
+
+        valid_label = (
+            patch_mask * img1).unsqueeze(-1) != (patch_mask * img2).unsqueeze(-1)
+        valid_label = torch.any(valid_label, dim=-1)
+        label = valid_label * patch_inv
 
         # Swap sample at patch
-        patch_idx = patch.nonzero(as_tuple=True)
-        img1[patch_idx] = (1 - alpha) * img1[patch_idx] + \
-            alpha * img2[patch_idx]
+        # patch_idx = patch.nonzero(as_tuple=True)
+        # img1[patch_idx] = (1 - alpha) * img1[patch_idx] + \
+        #     alpha * img2[patch_idx]
 
-        return img1, patch
+        return patchex, label
 
     def __getitem__(self, idx):
         # Select sample
@@ -221,8 +257,12 @@ def get_test_files(root: str, body_region: str):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    train_files = get_train_files(MOODROOT, "brain")
-    test_files = get_test_files(MOODROOT, "brain")
+    data = "brain"
+    # data = "abdom"
+    slices_lower_upper = [23, 200] if data == "brain" else [100, 500]
+    img_size = 256 if data == "brain" else 512
+    train_files = get_train_files(MOODROOT, data)
+    test_files = get_test_files(MOODROOT, data)
     print(f"# train_files: {len(train_files)}")
     print(f"# test_files: {len(test_files)}")
 
@@ -237,12 +277,12 @@ if __name__ == '__main__':
     # print(x[1].shape, y[1].shape)
 
     # ----- PatchSwapDataset -----
-    ds = PatchSwapDataset(train_files[:10], 128, slices_lower_upper=[
-                          127, 131], data="brain")
+    ds = PatchSwapDataset(
+        train_files[:40], img_size, slices_lower_upper=slices_lower_upper, data=data)
     for x, y in ds:
         print(x.shape)
         print(y.shape, y.min(), y.max())
-        fig = plt.figure()
+        fig = plt.figure(figsize=(8, 4))
         plt.axis('off')
         fig.add_subplot(1, 2, 1)
         plt.imshow(x[0], cmap="gray", vmin=0., vmax=1.)
