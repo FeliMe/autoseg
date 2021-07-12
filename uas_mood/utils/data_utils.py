@@ -150,6 +150,7 @@ def load_nii(path: str, size: int = None, dtype: str = "float32"):
     # Resize if size is given and if necessary
     if size is not None and (volume.shape[0] != size or volume.shape[1] != size):
         order = 1 if "float" in dtype else 0
+        # order = 0
         volume = resize(volume, [size, size, volume.shape[-1]], order=order)
 
     volume = volume.astype(np.dtype(dtype))
@@ -201,14 +202,12 @@ def process_scan(path: str, size: int = None, equalize_hist: bool = True,
     # Pre-processing
     if equalize_hist:
         # volume = histogram_equalization(volume)
-        pass
-
-    volume = torch.from_numpy(volume)
+        pass  # histogram equalization did not help here
 
     # convert from [w, h, slices] to [slices, w, h]
     # primary axis will be put first, 2 for brain, 1 for abdomen
-    # volume = np.rollaxis(volume, primary_axis)
-    volume = volume.permute(2, 0, 1)
+    primary_axis = 2
+    volume = np.rollaxis(volume, primary_axis)
 
     return volume
 
@@ -226,26 +225,28 @@ def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4,
 
     # Load
     segmentation, _ = load_nii(path, size=size, dtype='float32')
-    segmentation = torch.from_numpy(segmentation)
 
     # Select slices
     if slices_lower_upper is not None:
         segmentation = segmentation[..., slice(*slices_lower_upper)]
 
     # Binarize
-    segmentation = torch.where(segmentation > bin_threshold, 1, 0).short()
+    segmentation = np.where(
+        segmentation > bin_threshold, 1, 0).astype(np.short)
 
     # convert from [w, h, slices] to [slices, w, h]
-    segmentation = segmentation.permute(2, 0, 1)
+    # primary axis will be put first, 2 for brain, 1 for abdomen
+    primary_axis = 2
+    segmentation = np.rollaxis(segmentation, primary_axis)
 
     return segmentation
 
 
 if __name__ == '__main__':
-    path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift_segmentation.nii.gz"
+    path = "/home/felix/datasets/MOOD/brain/test_label/pixel/00480_reflection.nii.gz"
     segmentation = load_segmentation(
         path, slices_lower_upper=[23, 200], size=128)
-    path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
+    path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
     volume = process_scan(path, size=128, slices_lower_upper=[23, 200])
     print(volume.shape)
     volume_viewer(volume, slices_first=True)

@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from uas_mood.models.models import WideResNetAE
+from uas_mood.models import models
 from uas_mood.utils import evaluation, utils
 from uas_mood.utils.data_utils import volume_viewer, save_nii
 from uas_mood.utils.dataset import (
@@ -59,10 +59,11 @@ class LitModel(pl.LightningModule):
                                       'unet', in_channels=1, out_channels=1,
                                       init_features=32, pretrained=False,
                                       verbose=False)
+            self.net.apply(models.weights_init_relu)
         else:
             print("Using Wide ResNet")
-            self.net = WideResNetAE(inp_size=args.img_size,
-                                    widen_factor=args.model_width)
+            self.net = models.WideResNetAE(inp_size=args.img_size,
+                                           widen_factor=args.model_width)
 
         # Example input array needed to log the graph in tensorboard
         input_size = (1, args.img_size, args.img_size)
@@ -87,9 +88,8 @@ class LitModel(pl.LightningModule):
         return self.net(x)
 
     def configure_optimizers(self):
-        opt = torch.optim.Adam(
+        opt = torch.optim.AdamW(
             self.parameters(), lr=self.args.lr, weight_decay=0.5 * 0.0005)
-        # opt = torch.optim.AdamW(self.parameters(), lr=self.args.lr, weight_decay=0.5 * 0.0005)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9995)
         # return [opt], [scheduler]
         return [opt]
@@ -270,7 +270,6 @@ class LitModel(pl.LightningModule):
             tb = self.logger.experiment
 
             # Binarize map
-            th = 0.0772  # TODO: remove
             bin_map = torch.where(pred > th, 1., 0.)
 
             unique_anomalies = set(anomalies)
@@ -417,7 +416,7 @@ if __name__ == '__main__':
     # Data params
     parser.add_argument("--data", type=str, default="brain",
                         choices=["brain", "abdom"])
-    parser.add_argument("--img_size", type=int, default=128)
+    parser.add_argument("--img_size", type=int, default=256)
     parser.add_argument('--slices_lower_upper',
                         nargs='+', type=int, default=[23, 200])
     # parser.add_argument('--slices_lower_upper',
@@ -437,12 +436,12 @@ if __name__ == '__main__':
     parser.add_argument("--target_metric", type=str, default="ap")
     # Model params
     parser.add_argument("--model", type=str, choices=["unet", "resnet"],
-                        default="resnet")
+                        default="unet")
     parser.add_argument("--model_width", type=int, default=4)
     # Real Hyperparameters
-    parser.add_argument("--max_epochs", type=int, default=30)
+    parser.add_argument("--max_epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 

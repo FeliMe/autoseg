@@ -363,7 +363,7 @@ def full_evaluation_pixel(predictions, targets, anomalies):
         evaluate_pixel_wise(p, t)
 
     print("\nEvaluating total performance")
-    _, _, th = evaluate_pixel_wise(predictions, targets)
+    _, _, th = evaluate_pixel_wise(predictions, targets, dice=True)
 
     return th
 

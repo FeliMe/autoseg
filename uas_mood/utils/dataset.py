@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from uas_mood.utils.artificial_anomalies import create_patch
+from uas_mood.utils.artificial_anomalies import sample_complete_mask, patch_exchange
 from uas_mood.utils.data_utils import load_segmentation, process_scan
 
 
@@ -141,12 +141,12 @@ class PatchSwapDataset(PreloadDataset):
             # Samples are shape [width, height, slices]
             samples.append(process_scan(f, img_size, equalize_hist=True,
                                         slices_lower_upper=slices_lower_upper))
-            if torch.isnan(samples[-1]).sum():
+            if np.any(np.isnan(samples[-1])):
                 print(f)
 
         return samples
 
-    def patch_exchange(self, img1, img2):
+    def create_anomaly(self, img1, img2):
         """Create a sample where one patch is switched from another sample
         with a random interpolation factor
 
@@ -154,59 +154,22 @@ class PatchSwapDataset(PreloadDataset):
             img1 (torch.Tensor): shape [w, h]
             img2 (torch.Tensor): shape [w, h]
         """
-        d = img1.shape[-1]
-        back_val = 0. if self.data == "brain" else 1e-3
+        mask = sample_complete_mask(
+            n_patches=1, blur_prob=0., img=img1, size_range=[0.1, 0.4],
+            data=self.data, patch_type="polygon", poly_type="cubic",
+            n_vertices=10
+        )
+        patchex, label = patch_exchange(img1, img2, mask)
 
-        # Sample an index inside the object
-        obj_inds = torch.where(img1 > back_val)
-        if len(obj_inds[0]) == 0:
-            patch_center = [d // 2, d // 2]
-            patch_size = 1
-        else:
-            location_idx = random.randint(0, len(obj_inds[0]) - 1)
-            patch_center = [obj_inds[0][location_idx],
-                            obj_inds[1][location_idx]]
-            patch_size = round(random.uniform(0.1 * d, 0.4 * d))
-
-        # Sample location from core region
-        # core_percent = 0.5 if self.data == "brain" else 0.8
-        # core = core_percent * d
-        # offset = (1 - core_percent) * d / 2
-        # patch_center = [round(random.uniform(
-        #     offset, core + offset)) for _ in range(2)]
-
-        # Create patch
-        patch_mask = create_patch(patch_size=patch_size,
-                                  patch_center=patch_center, size=img1.shape)
-        patch_mask = torch.from_numpy(patch_mask)
-        zero_mask = 1 - patch_mask
-
-        # Sample interpolation factor alpha
-        alpha = random.uniform(0.05, 0.95)
-
-        # Target pixel value is also alpha
-        patch = patch_mask * alpha
-        patch_inv = patch_mask - patch
-
-        # Interpolate between patches
-        patch_set = patch * img1 + patch_inv * img2
-        patchex = img1 * zero_mask + patch_set
-
-        valid_label = (
-            patch_mask * img1).unsqueeze(-1) != (patch_mask * img2).unsqueeze(-1)
-        valid_label = torch.any(valid_label, dim=-1)
-        label = valid_label * patch_inv
-
-        # Swap sample at patch
-        # patch_idx = patch.nonzero(as_tuple=True)
-        # img1[patch_idx] = (1 - alpha) * img1[patch_idx] + \
-        #     alpha * img2[patch_idx]
+        # Convert to tensor
+        patchex = torch.from_numpy(patchex)
+        label = torch.from_numpy(label)
 
         return patchex, label
 
     def __getitem__(self, idx):
         # Select sample
-        sample = self.samples[idx].clone()
+        sample = self.samples[idx].copy()
 
         # Randomly select another sample at the same slice
         i_slice = idx % self.n_slices
@@ -215,7 +178,7 @@ class PatchSwapDataset(PreloadDataset):
         other_sample = self.samples[other_idx]
 
         # Create foreign patch interpolation
-        sample, patch = self.patch_exchange(sample, other_sample)
+        sample, patch = self.create_anomaly(sample, other_sample)
 
         # Add fake channels dimension
         sample = sample.unsqueeze(0)
@@ -278,10 +241,11 @@ if __name__ == '__main__':
 
     # ----- PatchSwapDataset -----
     ds = PatchSwapDataset(
-        train_files[:40], img_size, slices_lower_upper=slices_lower_upper, data=data)
+        train_files[:30], img_size, slices_lower_upper=slices_lower_upper, data=data)
     for x, y in ds:
         print(x.shape)
         print(y.shape, y.min(), y.max())
+        print(x.dtype, y.dtype)
         fig = plt.figure(figsize=(8, 4))
         plt.axis('off')
         fig.add_subplot(1, 2, 1)

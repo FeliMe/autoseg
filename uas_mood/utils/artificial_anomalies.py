@@ -1,374 +1,233 @@
+import random
+
+from PIL import Image, ImageDraw
+import matplotlib.pyplot as plt
 import numpy as np
-from scipy.ndimage.morphology import binary_fill_holes
-import torch
+from scipy import interpolate
+from scipy.ndimage import filters
+from skimage.draw import ellipse
 
-from uas_mood.utils.data_utils import load_nii, volume_viewer
-
-
-def rand_sign():
-    return 1 if np.random.random() < 0.5 else -1
+from uas_mood.utils.data_utils import process_scan
 
 
-def create_sphere(radius, position, size):
-    """Create a shpere with radius on a volume of size at position
-
-    Args:
-        radius (int)
-        position (list or tuple of length 3): Center of the sphere
-        size (list or tuple of length 3): Size of the created volume
-
-    Returns:
-        sphere (np.array of shape size): Volume with the sphere inside
-    """
-    assert len(position) == 3
-    assert len(size) == 3
-
-    x, y, z = position
-    w, h, c = size
-    x_, y_, z_ = np.ogrid[-x:c-x, -y:h-y, -z:w-z]
-    mask = x_*x_ + y_*y_ + z_*z_ <= radius*radius
-    sphere = np.zeros(size)
-    sphere[mask] = 1
-    return sphere
+def sample_location(img: np.ndarray, back_val: float):
+    obj_inds = np.where(img > back_val)
+    if len(obj_inds[0]) == 0:
+        center = [dim // 2 for dim in img.shape]
+    else:
+        location_idx = random.randint(0, len(obj_inds[0]) - 1)
+        center = [obj_inds[0][location_idx],
+                  obj_inds[1][location_idx]]
+    return center
 
 
-def create_patch(patch_size, patch_center, size):
-    """Create a path of patch_size on an image or volume of size at location
+def create_rectangle(center, size, img_size):
+    """Create a path of patch_size on an image of size at location
     patch_center.
 
-    Args:
-        path_size (int)
-        patch_center (list or tuple of length 3): Center of the sphere
-        size (list or tuple of length 3): Size of the created volume
-
-    Returns:
-        sphere (np.array of shape size): Volume with the sphere inside
+    :param tuple(int, int) center: Center of the sphere
+    :param tuple(int, int) size: width and height of the patch
+    :param tuple(int, int) img_size: Size of the created mask
+    :return np.ndarray patch_mask: Mask of img_size with the patch inside
     """
-    upper_left = np.round(patch_size / 2).astype(int)
-    lower_right = np.round(patch_size - upper_left).astype(int)
-    starts = patch_center - upper_left
-    ends = patch_center + lower_right
-    starts = starts.clip(0, size)
-    ends = ends.clip(0, size)
+    if not isinstance(size, np.ndarray):
+        size = np.array(size)
+    upper_left = np.round(size / 2).astype(int)
+    lower_right = np.round(size - upper_left).astype(int)
+    starts = center - upper_left
+    ends = center + lower_right
+    starts = starts.clip(0, img_size)
+    ends = ends.clip(0, img_size)
     slices = tuple(
         slice(start, end)
         for start, end in zip(starts, ends)
     )
 
-    patch = np.zeros(size, dtype=np.float32)
-    patch[slices] = 1
+    patch_mask = np.zeros(img_size, dtype=np.float32)
+    patch_mask[slices] = 1
 
-    return patch
+    return patch_mask
 
 
-def uniform_addition_anomaly(volume, mask):
-    """Adds uniform noise sampled from a normal distribution with mu and std
-    to a volume at mask and only at pixels where the object is
+def create_ellipse(center, size, img_size):
+    """Create a path of patch_size on an image of size at location
+    patch_center.
 
-    Args:
-        volume (np.array): Scan to be augmented, shape [..., slices, h, w]
-        mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
-        mu (float): Mean of intensity
-        std (float): Standard deviation of intensity
+    :param tuple(int, int) center: Center of the sphere
+    :param tuple(int, int) size: width and height of the patch
+    :param tuple(int, int) img_size: Size of the created mask
+    :return np.ndarray patch_mask: Mask of img_size with the patch inside
     """
-
-    assert isinstance(volume, np.ndarray) or isinstance(volume, torch.Tensor)
-
-    # Sample intensity
-    intensity_range = np.max(volume) - np.min(volume)
-    intensity = np.random.uniform(0.2 * intensity_range, 0.3 * intensity_range)
-    intensity *= rand_sign()
-
-    # Apply anomaly
-    volume += intensity * mask
-    volume = np.clip(volume, 0., 1.)
-
-    return volume, mask
-
-
-def noise_addition_anomaly(volume, mask):
-    """Adds noise sampled from a normal distribution with mu and std
-    to voxels of a volume at mask and only at pixels where the object is
-
-    Args:
-        volume (np.array): Scan to be augmented, shape [..., slices, h, w]
-        mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
-        mu (float): Mean of intensity
-        std (float): Standard deviation of intensity
-    """
-
-    # Sample random noise
-    intensity_range = np.max(volume) - np.min(volume)
-    intensity = np.random.uniform(
-        0.05 * intensity_range, 0.3 * intensity_range, size=mask.shape)
-    intensity *= rand_sign()
-
-    # Reduce noise to mask only
-    sphere_add = mask * intensity
-
-    # Apply noise
-    volume = volume + sphere_add
-
-    return volume, mask
-
-
-def sink_deformation_anomaly(volume, mask, center, radius):
-    """Voxels are shifted toward from the center of the sphere.
-
-    Args:
-        volume (np.array): Scan to be augmented, shape [..., slices, h, w]
-        mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
-        center (list of length 3): Center pixel of the mask
-    """
-
-    # Center voxel of deformation
-    C = np.array(center)
-
-    # Create copy of volume for reference
-    copy = volume.copy()
-
-    # Iterate over indices of all voxels in mask
-    inds = np.where(mask > 0)
-    for x, y, z in zip(*inds[-3:]):
-        # Voxel at current location
-        I = np.array([x, y, z])
-
-        # Sink pixel shift
-        s = np.square(np.linalg.norm(I - C, ord=2) / radius)
-        V = np.round(I + (1 - s) * (I - C)).astype(np.int)
-        x_, y_, z_ = V
-
-        # Assure that z_, y_ and x_ are valid indices
-        x_ = max(min(x_, volume.shape[-3] - 1), 0)
-        y_ = max(min(y_, volume.shape[-2] - 1), 0)
-        z_ = max(min(z_, volume.shape[-1] - 1), 0)
-
-        if volume[..., x, y, z] > 0:
-            volume[..., x, y, z] = copy[..., x_, y_, z_]
-
-    return volume, mask
-
-
-def source_deformation_anomaly(volume, mask, center, radius):
-    """Voxels are shifted away from the center of the sphere.
-
-    Args:
-        volume (np.array): Scan to be augmented, shape [..., slices, h, w]
-        mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
-        center (list of length 3): Center pixel of the mask
-    """
-
-    # Center voxel of deformation
-    C = np.array(center)
-
-    # Create copy of volume for reference
-    copy = volume.copy()
-
-    # Iterate over indices of all voxels in mask
-    inds = np.where(mask > 0)
-    for x, y, z in zip(*inds[-3:]):
-        # Voxel at current location
-        I = np.array([x, y, z])
-
-        # Source pixel shift
-        s = np.square(np.linalg.norm(I - C, ord=2) / radius)
-        V = np.round(C + s * (I - C)).astype(np.int)
-        x_, y_, z_ = V
-
-        # Assure that z_, y_ and x_ are valid indices
-        x_ = max(min(x_, volume.shape[-1] - 1), 0)
-        y_ = max(min(y_, volume.shape[-2] - 1), 0)
-        z_ = max(min(z_, volume.shape[-3] - 1), 0)
-
-        if volume[..., x, y, z] > 0:
-            volume[..., x, y, z] = copy[..., x_, y_, z_]
-
-    return volume, mask
-
-
-def uniform_shift_anomaly(volume, mask):
-    """Voxels in the sphere are resampled from a copy of the volume which has
-    been shifted by a random distance in a random direction.
-
-    Args:
-        volume (np.array): Scan to be augmented, shape [..., slices, h, w]
-        mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
-    """
-
-    def shift_volume(volume, x, y, z):
-        """Shifts a volume by x, y, and z. Only small shifts are supported"""
-        shifted = np.roll(volume, shift=x, axis=-1)
-        shifted = np.roll(shifted, shift=y, axis=-2)
-        shifted = np.roll(shifted, shift=z, axis=-3)
-        return shifted
-
-    # Create shift parameters
-    c, h, w = volume.shape[-3:]
-    x = rand_sign() * np.random.randint(0.02 * w, 0.05 * w)
-    y = rand_sign() * np.random.randint(0.02 * h, 0.05 * h)
-    z = rand_sign() * np.random.randint(0.02 * c, 0.05 * c)
-
-    # Shift volume by x, y, z
-    shifted = shift_volume(volume, x, y, z)
-
-    # Create anomaly at mask
-    volume[mask > 0] = shifted[mask > 0]
-
-    return volume, mask
-
-
-def reflection_anomaly(volume, mask):
-    """pixels in the sphere are resampled from a copy of the volume that has
-    been reflected along an axis of symmetry
-
-    Args:
-        volume (np.array): Scan to be augmented, shape [..., slices, h, w]
-        mask (np.array): Indicates where to add the anomaly, shape [slices, h, w]
-    """
-
-    # Create a reflection by flipping along the width axis
-    reflection = np.flip(volume, axis=0)
-
-    # Create anomaly at mask
-    volume[mask > 0] = reflection[mask > 0]
-
-    return volume, mask
-
-
-def sample_location(volume):
-    dims = np.array(np.shape(volume))
-    core = dims // 2  # width of core region
-    offset = core // 2  # sampling range of center
-    rng = [slice(o, c + o) for c, o in zip(core, offset)]  # Sampling range
-
-    # Select a center from the nonzero pixels in volume
-    if volume.shape[0] == 256:  # Brain
-        inds = np.where(volume[rng[0], rng[1], rng[2]] > 0)
-    elif volume.shape[0] == 512:  # Abdomen has no 0 intensities
-        inds = np.where(volume[rng[0], rng[1], rng[2]] > 5e-2)
-    else:
-        raise RuntimeError("Invalid volume size")
-
-    if isinstance(inds, torch.Tensor):
-        inds = inds.numpy()
-    # Convert from tuple to array
-    inds = np.array(inds)
-
-    # Add the cropped offset from before
-    inds = inds + offset[:, None]
-
-    ix = np.random.choice(len(inds[0]))
-    center = [ind[ix] for ind in inds[-3:]]
-
-    return center
-
-
-def sample_location2(volume: np.ndarray):
-    # Get dimensions
-    dims = np.array(np.shape(volume))
-    core = dims // 2  # width of core region
-    offset = core // 2  # sampling range of center
-
-    # Sample center of location
-    center = []
-    for i, _ in enumerate(dims):
-        center.append(np.random.randint(offset[i], offset[i]+core[i]))
-
-    return center
-
-
-def truncate_mask(volume, mask):
-    """Returns a mask only where the object in volume and mask overlay
-
-    Args:
-        volume (np.ndarray): 3D scan
-        mask (np.ndarray): binary mask (sphere or patch)
-    Returns:
-        mask (np.ndarray): binary mask at object voxels
-    """
-    if volume.shape[0] == 256:  # Brain, use nonzero pixels
-        obj_mask = np.where(volume > 0, 1, 0)
-    elif volume.shape[0] == 512:  # Abdomen, use morphological closing
-        obj_mask = binary_fill_holes(np.where(volume > 5e-2, 1, 0),
-                                     structure=np.ones((2, 2, 2)))
-    else:
-        raise RuntimeError("Invalid shape. Not brain (256) or abdomen (512)")
-
-    mask = mask * obj_mask
+    rotation = np.random.randint(0, 360)
+    mask = np.zeros(img_size, dtype=np.float32)
+    radius = size / 2
+    rr, cc = ellipse(*center, *radius, rotation=np.deg2rad(rotation))
+    mask[rr, cc] = 1
     return mask
 
 
-def create_random_anomaly(volume, verbose=False):
-    assert volume.ndim == 3
+def create_polygon(center, size, img_size, n_vertices, order):
+    """Create a random polygon with n_vertices.
 
-    # Select a random anomaly
-    anomalies = [
-        "uniform_addition",
-        "noise_addition",
-        "sink_deformation",
-        "source_deformation",
-        "uniform_shift",
-        "reflection"
-    ]
-    anomaly_type = np.random.choice(anomalies)
-    # anomaly_type = "uniform_shift"
+    Args:
+    :param int n_vertices: Number of vertices
+    :param tuple(int, int) img_shape: (width, height)
+    :param tuple(int, int) center: center coordinates (x, y)
+    :param tuple(int, int) scale: scaling factors (x, y)
+    :param int order: Select 1 for streight lines, 3 for cubic splines
+    :param int blur_factor: Select 1 for streight lines, 3 for cubic splines
+    :param np.ndarray poly_mask: Mask of img_size with the polygon inside
+    """
+    # Sample random radius
+    r = np.random.uniform(0.1, 0.5, n_vertices)
 
-    # Sample random center position inside the anatomy
-    center = sample_location(volume)
+    # Sample random degrees
+    d_phi = np.random.uniform(-10, 10, n_vertices)
+    phi = np.empty(n_vertices)
+    for i in range(n_vertices):
+        phi[i] = (i * 360. / n_vertices + d_phi[i]) * np.pi / 180.
 
-    # Select a radius at random
-    d = volume.shape[0]
-    if anomaly_type in ["uniform_addition", "noise_addition"]:
-        min_radius = np.round(0.05 * d)
-        max_radius = np.round(0.10 * d)
+    # Create x- and y-coordinates of points from degrees and radius
+    x = np.cos(phi) * r
+    y = np.sin(phi) * r
+
+    # Create line or spline
+    tck, _ = interpolate.splprep([x, y], s=0, k=order)
+    unew = np.arange(0, 1.01, 0.01)
+    poly_points = interpolate.splev(unew, tck)
+    poly_points = np.array(poly_points).T
+
+    # Scale and shift
+    poly_points *= size
+    poly_points += center
+
+    # Render polygon to image mask
+    img = Image.new("L", size=img_size, color=0)
+    ImageDraw.Draw(img).polygon(poly_points.flatten().tolist(),
+                                outline=1, fill=1)
+    poly_mask = np.array(img, dtype=np.float32)
+
+    return poly_mask
+
+
+def sample_patch(img, size_range, data, patch_type, poly_type, n_vertices):
+    """Sample a patch of random size at a random location
+
+    :param np.ndarray img: Original image to create the patch for, shape [w, h]
+    :param tuple(int, int) size_range: Minimum and maximum radius as fraction of image size
+    :param str data: "brain" or "abdom"
+    :param str patch_type: "rectangle", "ellipse" or "polygon"
+    :param str poly_type: "linear" or "cubic"
+    :param int n_vertices: Only relevant for "polygon"
+    :return np.ndarray mask: mask with same size as img with sampled patch
+    """
+    # Sample location
+    back_val = 0. if data == "brain" else 1e-3
+    center = sample_location(img, back_val)
+
+    # Sample size
+    d = img.shape[-1]
+    size = np.random.uniform(
+        size_range[0] * d, size_range[1] * d, 2).round()
+
+    # Create mask
+    img_size = img.shape
+    if patch_type == "rectangle":
+        mask = create_rectangle(
+            center=center,
+            size=size,
+            img_size=img_size,
+        )
+    elif patch_type == "polygon":
+        mask = create_polygon(
+            center=center,
+            size=size,
+            img_size=img_size,
+            order=1 if poly_type == "linear" else 3,
+            n_vertices=n_vertices,
+        )
+    elif patch_type == "ellipse":
+        mask = create_ellipse(
+            center=center,
+            size=size,
+            img_size=img_size,
+        )
     else:
-        min_radius = np.round(0.08 * d)
-        max_radius = np.round(0.13 * d)
-    radius = np.random.randint(min_radius, max_radius)
+        raise NotImplementedError
 
-    # Create sphere with samples radius and location
-    sphere = create_sphere(radius, center, list(volume.shape))
+    return mask
 
-    # Truncate sphere to include only voxels inside the object
-    sphere = truncate_mask(volume, sphere)
 
-    if verbose:
-        print(f"{anomaly_type} at center {center} with radius {radius}")
+def sample_complete_mask(n_patches, blur_prob, img, **kwargs):
+    """Sample a mask with n_patches using the sample_patch function and blur
 
-    # Create anomaly
-    if anomaly_type == "uniform_addition":
-        res, segmentation = uniform_addition_anomaly(volume, sphere)
-    elif anomaly_type == "noise_addition":
-        res, segmentation = noise_addition_anomaly(volume, sphere)
-    elif anomaly_type == "sink_deformation":
-        res, segmentation = sink_deformation_anomaly(
-            volume, sphere, center, radius)
-    elif anomaly_type == "source_deformation":
-        res, segmentation = source_deformation_anomaly(
-            volume, sphere, center, radius)
-    elif anomaly_type == "uniform_shift":
-        res, segmentation = uniform_shift_anomaly(volume, sphere)
-    else:
-        res, segmentation = reflection_anomaly(volume, sphere)
+    :param int n_patches: number of patches in mask
+    :param float blur_prob: Probability of blurring applied to mask
+    :return np.ndarray mask: mask with multiple patches
+    """
+    mask = np.zeros_like(img)
+    for _ in range(n_patches):
+        mask = np.logical_or(mask, sample_patch(img, **kwargs))
 
-    return res, segmentation, anomaly_type, center, radius
+    if random.random() < blur_prob:
+        mask = filters.gaussian_filter(mask * 255, sigma=2) / 255
+
+    return mask.astype(np.float32)
+
+
+def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
+    """Create a sample where one patch is switched from another sample
+    with a random interpolation factor
+
+    Args:
+    :param np.ndarray img1: shape [w, h]
+    :param np.ndarray img2: shape [w, h]
+    :param np.ndarray mask: shape [w, h], mask indicating the pixels to swap
+    """
+    zero_mask = 1 - mask
+
+    # Sample interpolation factor alpha
+    alpha = random.uniform(0.05, 0.95)
+
+    # Target pixel value is also alpha
+    patch = mask * alpha
+    patch_inv = mask - patch
+
+    # Interpolate between patches
+    patch_set = patch * img1 + patch_inv * img2
+    patchex = img1 * zero_mask + patch_set
+
+    valid_label = (
+        mask * img1)[..., None] != (mask * img2)[..., None]
+    valid_label = np.any(valid_label, axis=-1)
+    label = valid_label * patch_inv
+
+    return patchex, label
 
 
 if __name__ == "__main__":
-    # random seed
-    # np.random.seed(1)
+    seed = 0
+    np.random.seed(seed)
+    i_slice = 100
+    path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
+    volume1 = process_scan(path, size=256, slices_lower_upper=[23, 200])
+    img1 = volume1[i_slice]
+    path = "/home/felix/datasets/MOOD/brain/test/00481_uniform_addition.nii.gz"
+    volume2 = process_scan(path, size=256, slices_lower_upper=[23, 200])
+    img2 = volume2[i_slice]
+    mask = sample_complete_mask(
+        n_patches=1, blur_prob=0., img=img1, size_range=[0.1, 0.4],
+        data="brain", patch_type="polygon", poly_type="cubic", n_vertices=10
+    )
+    patchex, label = patch_exchange(img1, img2, mask)
 
-    # Load a sample
-    path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
-    volume, affine = load_nii(path)
-    print(volume.min(), volume.max(), volume.mean())
-
-    anomal_sample, segmentation, _, center, _ = create_random_anomaly(
-        volume, verbose=True)
-    print(anomal_sample.min(), anomal_sample.max(), anomal_sample.mean())
-    print("Visualizing")
-    volume_viewer(anomal_sample, initial_position=center)
-    volume_viewer(segmentation, initial_position=center)
+    img = (img1 + mask).clip(0., 1.)
+    plt.imshow(img, cmap="gray")
+    plt.show()
+    plt.imshow(label, cmap="gray")
+    plt.show()
+    plt.imshow(patchex, cmap="gray")
+    plt.show()
     import IPython
     IPython.embed()
     exit(1)
