@@ -2,6 +2,7 @@ import argparse
 import os
 import random
 from time import time
+from warnings import warn
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -15,7 +16,7 @@ from tqdm import tqdm
 
 from uas_mood.models import models
 from uas_mood.utils import evaluation, utils
-from uas_mood.utils.data_utils import volume_viewer, save_nii
+from uas_mood.utils.data_utils import save_nii, volume_viewer
 from uas_mood.utils.dataset import (
     MOODROOT,
     PatchSwapDataset,
@@ -220,10 +221,21 @@ class LitModel(pl.LightningModule):
         anomaly = name.split('/')[-1].split(".nii.gz")[0][6:]
 
         # x was a tuple of (file_name, volume [slices, w, h])
-        x = x[1].unsqueeze(1)
+        x = x[1]
         # y was a tuple of (file_name, volume [slices, w, h])
-        y = y[1].unsqueeze(1)
-        pred = self(x)
+        y = y[1].cpu()
+
+        # Forward from all three viewing directions
+        pred_axial = self(x.unsqueeze(1)).squeeze(1).cpu()
+        # Equivalent to np.rollaxis(x, 1)
+        pred_coronal = self(x.permute(1, 0, 2).unsqueeze(1)).squeeze(1).cpu()
+        pred_coronal = pred_coronal.permute(1, 0, 2)  # Roll back
+        # Equivalent to np.rollaxis(x, 2)
+        pred_saggital = self(x.permute(2, 0, 1).unsqueeze(1)).squeeze(1).cpu()
+        pred_saggital = pred_saggital.permute(1, 2, 0)  # Roll back
+
+        # Combine viewing directions
+        pred = torch.stack([pred_axial, pred_coronal, pred_saggital]).mean(0)
 
         # Compute loss
         loss = self.loss_fn(pred, y.float())
@@ -234,7 +246,7 @@ class LitModel(pl.LightningModule):
             "name": name,
             "anomaly": anomaly,
             "loss": loss,
-            "anomaly_map": pred.cpu(),
+            "anomaly_map": pred,
         }
 
     def test_epoch_end(self, outputs):
@@ -380,7 +392,7 @@ def train(args, trainer, train_files):
 def test(args, trainer, test_files, model=None):
     # Init lighning model
     if args.model_ckpt is None and model is None:
-        print("Warning: testing untrained model")
+        warn("Evaluating untrained model")
         model = LitModel(args)
     elif model is None:
         print(f"Restoring checkpoint from {args.model_ckpt}")
@@ -417,8 +429,8 @@ if __name__ == '__main__':
     parser.add_argument("--data", type=str, default="brain",
                         choices=["brain", "abdom"])
     parser.add_argument("--img_size", type=int, default=256)
-    parser.add_argument('--slices_lower_upper',
-                        nargs='+', type=int, default=[23, 200])
+    # parser.add_argument('--slices_lower_upper',
+    #                     nargs='+', type=int, default=[23, 200])
     # parser.add_argument('--slices_lower_upper',
     #                     nargs='+', type=int, default=[79, 83])
     # Engineering params
@@ -457,7 +469,9 @@ if __name__ == '__main__':
     pl.seed_everything(args.seed)
 
     # Save number of slices per sample as a parameters
-    args.n_slices = args.slices_lower_upper[1] - args.slices_lower_upper[0]
+    # args.n_slices = args.slices_lower_upper[1] - args.slices_lower_upper[0]
+    args.slices_lower_upper = None
+    args.n_slices = args.img_size
     args.volume_shape = [args.n_slices, args.img_size, args.img_size]
 
     # Get train and test paths

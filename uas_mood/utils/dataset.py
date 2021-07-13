@@ -65,6 +65,7 @@ class TrainDataset(PreloadDataset):
         res = self.load_to_ram(files, img_size, slices_lower_upper)
         samples = [s for r in res for s in r]
         self.samples = [sl for sample in samples for sl in sample]
+        self.samples = [torch.from_numpy(s) for s in self.samples]
 
     def __len__(self):
         return len(self.samples)
@@ -91,8 +92,12 @@ class TestDataset(PreloadDataset):
     def __init__(self, files, img_size, slices_lower_upper):
         super().__init__()
         res = self.load_to_ram(files, img_size, slices_lower_upper)
-        self.samples = [s for t in res for s in t["samples"]]
-        self.segmentations = [s for t in res for s in t["segmentations"]]
+        samples = [s for t in res for s in t["samples"]]
+        segmentations = [s for t in res for s in t["segmentations"]]
+
+        self.samples = [(s[0], torch.from_numpy(s[1])) for s in samples]
+        self.segmentations = [(s[0], torch.from_numpy(s[1]))
+                              for s in segmentations]
 
     def __len__(self):
         return len(self.samples)
@@ -126,9 +131,15 @@ class PatchSwapDataset(PreloadDataset):
         assert data in ["brain", "abdom"]
         res = self.load_to_ram(files, img_size, slices_lower_upper)
         samples = [s for r in res for s in r]
-        self.n_slices = samples[0].shape[0]
+        # Samples: list of patient volumes [slices, w, h]
         self.n_scans = len(samples)
-        self.samples = [sl for sample in samples for sl in sample]
+        self.n_slices = samples[0].shape[0]
+        self.samples = []
+        for sample in samples:
+            self.samples += [sl for sl in sample]
+            self.samples += [sl for sl in np.rollaxis(sample, 1)]
+            self.samples += [sl for sl in np.rollaxis(sample, 2)]
+        # self.samples = [sl for sample in samples for sl in sample]
         self.data = data
 
     def __len__(self):
@@ -172,9 +183,9 @@ class PatchSwapDataset(PreloadDataset):
         sample = self.samples[idx].copy()
 
         # Randomly select another sample at the same slice
-        i_slice = idx % self.n_slices
+        i_slice = idx % (self.n_slices * 3)
         other_scan = random.randint(0, self.n_scans - 1)
-        other_idx = other_scan * self.n_slices + i_slice
+        other_idx = other_scan * (self.n_slices * 3) + i_slice
         other_sample = self.samples[other_idx]
 
         # Create foreign patch interpolation
@@ -222,7 +233,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     data = "brain"
     # data = "abdom"
-    slices_lower_upper = [23, 200] if data == "brain" else [100, 500]
     img_size = 256 if data == "brain" else 512
     train_files = get_train_files(MOODROOT, data)
     test_files = get_test_files(MOODROOT, data)
@@ -230,26 +240,24 @@ if __name__ == '__main__':
     print(f"# test_files: {len(test_files)}")
 
     # ----- TrainDataset -----
-    # ds = TrainDataset(train_files[:10], 128, slices_lower_upper=[127, 131])
-    # x = next(iter(ds))
+    # ds = TrainDataset(train_files[:10], 256, slices_lower_upper=None)
+    # idx = 128
+    # x = ds.__getitem__(idx)
     # print(x.shape)
 
     # ----- TestDataset -----
-    # ds = TestDataset(test_files[:10], 128, slices_lower_upper=[127, 131])
-    # x, y = next(iter(ds))
-    # print(x[1].shape, y[1].shape)
+    ds = TestDataset(test_files[:10], 256, slices_lower_upper=None)
+    idx = 103
+    x, y = next(iter(ds))
+    print(x[1].shape, y[1].shape)
+    plot([x[1][idx], y[1][idx]])
 
     # ----- PatchSwapDataset -----
     ds = PatchSwapDataset(
-        train_files[:30], img_size, slices_lower_upper=slices_lower_upper, data=data)
-    for x, y in ds:
-        print(x.shape)
-        print(y.shape, y.min(), y.max())
-        print(x.dtype, y.dtype)
-        fig = plt.figure(figsize=(8, 4))
-        plt.axis('off')
-        fig.add_subplot(1, 2, 1)
-        plt.imshow(x[0], cmap="gray", vmin=0., vmax=1.)
-        fig.add_subplot(1, 2, 2)
-        plt.imshow(y[0], cmap="gray", vmin=0., vmax=1.)
-        plt.show()
+        train_files[:20], img_size, slices_lower_upper=None, data=data)
+    idx = 128 + 256
+    x, y = ds.__getitem__(idx)
+    print(x.shape)
+    print(y.shape, y.min(), y.max())
+    print(x.dtype, y.dtype)
+    plot([x[0], (x[0] + y[0]).clip(0, 1), y[0]])

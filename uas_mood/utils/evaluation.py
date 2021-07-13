@@ -14,8 +14,9 @@ from sklearn.metrics import (
 )
 import torch
 from torchvision.utils import make_grid
+from tqdm import tqdm
 
-from uas_mood.utils import utils, data_utils
+from uas_mood.utils import data_utils, utils
 
 
 def plot_results(images: list, titles: list, n_images=20):
@@ -75,7 +76,7 @@ def plot_prc(predictions, targets):
     return fig
 
 
-def compute_best_dice(preds, targets, n_thresh=100):
+def compute_best_dice(preds, targets, n_thresh=100, verbose=True):
     """Compute the best dice score between an anomaly map and the ground truth
     segmentation using a greedy binary search with depth search_depth
 
@@ -90,8 +91,8 @@ def compute_best_dice(preds, targets, n_thresh=100):
     thresholds = np.linspace(preds.min(), preds.max(), n_thresh)
     threshs = []
     scores = []
-    # for t in tqdm(thresholds, desc="DSC search"):
-    for t in thresholds:
+    for t in tqdm(thresholds, desc="DSC search", disable=not verbose):
+        # for t in thresholds:
         dice = compute_dice(torch.where(preds > t, 1., 0.), targets)
         scores.append(dice)
         threshs.append(t)

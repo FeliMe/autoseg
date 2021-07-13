@@ -10,6 +10,18 @@ from skimage.draw import ellipse
 from uas_mood.utils.data_utils import process_scan
 
 
+def plot(images):
+    if not isinstance(images, list):
+        images = [images]
+    n = len(images)
+    fig = plt.figure(figsize=(4 * n, 4))
+    plt.axis("off")
+    for i, im in enumerate(images):
+        fig.add_subplot(1, n, i + 1)
+        plt.imshow(im, cmap="gray", vmin=0., vmax=1.)
+    plt.show()
+
+
 def sample_location(img: np.ndarray, back_val: float):
     obj_inds = np.where(img > back_val)
     if len(obj_inds[0]) == 0:
@@ -188,19 +200,20 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
 
     # Sample interpolation factor alpha
     alpha = random.uniform(0.05, 0.95)
+    alpha = 0.95
 
     # Target pixel value is also alpha
     patch = mask * alpha
     patch_inv = mask - patch
 
     # Interpolate between patches
-    patch_set = patch * img1 + patch_inv * img2
+    patch_set = patch * img2 + patch_inv * img1
     patchex = img1 * zero_mask + patch_set
 
     valid_label = (
         mask * img1)[..., None] != (mask * img2)[..., None]
     valid_label = np.any(valid_label, axis=-1)
-    label = valid_label * patch_inv
+    label = valid_label * patch
 
     return patchex, label
 

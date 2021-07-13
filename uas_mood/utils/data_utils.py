@@ -150,7 +150,6 @@ def load_nii(path: str, size: int = None, dtype: str = "float32"):
     # Resize if size is given and if necessary
     if size is not None and (volume.shape[0] != size or volume.shape[1] != size):
         order = 1 if "float" in dtype else 0
-        # order = 0
         volume = resize(volume, [size, size, volume.shape[-1]], order=order)
 
     volume = volume.astype(np.dtype(dtype))
