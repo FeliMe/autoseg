@@ -129,16 +129,24 @@ class PatchSwapDataset(PreloadDataset):
     def __init__(self, files, img_size, slices_lower_upper, data):
         super().__init__()
         assert data in ["brain", "abdom"]
-        res = self.load_to_ram(files, img_size, slices_lower_upper)
+        res = self.load_to_ram(files, img_size, slices_lower_upper=None)
         samples = [s for r in res for s in r]
         # Samples: list of patient volumes [slices, w, h]
         self.n_scans = len(samples)
-        self.n_slices = samples[0].shape[0]
+        self.n_slices = -1
         self.samples = []
         for sample in samples:
-            self.samples += [sl for sl in sample]
-            self.samples += [sl for sl in np.rollaxis(sample, 1)]
-            self.samples += [sl for sl in np.rollaxis(sample, 2)]
+            axial = sample
+            # axial = axial[11:216] if data == "brain" else axial
+            coronal = np.rollaxis(sample, 1)
+            # coronal = coronal[27:231] if data == "brain" else coronal
+            saggital = np.rollaxis(sample, 2)
+            # saggital = saggital[13:247] if data == "brain" else saggital
+            self.samples += [sl for sl in axial]
+            self.samples += [sl for sl in coronal]
+            self.samples += [sl for sl in saggital]
+            if self.n_slices == -1:
+                self.n_slices = len(self.samples)
         # self.samples = [sl for sample in samples for sl in sample]
         self.data = data
 
@@ -166,7 +174,7 @@ class PatchSwapDataset(PreloadDataset):
             img2 (torch.Tensor): shape [w, h]
         """
         mask = sample_complete_mask(
-            n_patches=1, blur_prob=0., img=img1, size_range=[0.1, 0.4],
+            n_patches=1, blur_prob=0., img=img1, size_range=[0.1, 0.5],
             data=self.data, patch_type="polygon", poly_type="cubic",
             n_vertices=10
         )
@@ -183,9 +191,9 @@ class PatchSwapDataset(PreloadDataset):
         sample = self.samples[idx].copy()
 
         # Randomly select another sample at the same slice
-        i_slice = idx % (self.n_slices * 3)
+        i_slice = idx % self.n_slices
         other_scan = random.randint(0, self.n_scans - 1)
-        other_idx = other_scan * (self.n_slices * 3) + i_slice
+        other_idx = other_scan * self.n_slices + i_slice
         other_sample = self.samples[other_idx]
 
         # Create foreign patch interpolation
@@ -246,16 +254,16 @@ if __name__ == '__main__':
     # print(x.shape)
 
     # ----- TestDataset -----
-    ds = TestDataset(test_files[:10], 256, slices_lower_upper=None)
-    idx = 103
-    x, y = next(iter(ds))
-    print(x[1].shape, y[1].shape)
-    plot([x[1][idx], y[1][idx]])
+    # ds = TestDataset(test_files[:10], 256, slices_lower_upper=None)
+    # idx = 103
+    # x, y = next(iter(ds))
+    # print(x[1].shape, y[1].shape)
+    # plot([x[1][idx], y[1][idx]])
 
     # ----- PatchSwapDataset -----
     ds = PatchSwapDataset(
         train_files[:20], img_size, slices_lower_upper=None, data=data)
-    idx = 128 + 256
+    idx = 128 + 409
     x, y = ds.__getitem__(idx)
     print(x.shape)
     print(y.shape, y.min(), y.max())

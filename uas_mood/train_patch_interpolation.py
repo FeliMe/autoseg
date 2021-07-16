@@ -1,4 +1,5 @@
 import argparse
+import gc
 import os
 import random
 from time import time
@@ -32,7 +33,19 @@ class LitProgressBar(pl.callbacks.progress.ProgressBar):
         return tqdm(disable=True)
 
 
-def plot(volumes, i_slice):
+def plot(images):
+    if not isinstance(images, list):
+        images = [images]
+    n = len(images)
+    fig = plt.figure(figsize=(4 * n, 4))
+    plt.axis("off")
+    for i, im in enumerate(images):
+        fig.add_subplot(1, n, i + 1)
+        plt.imshow(im, cmap="gray", vmin=0., vmax=1.)
+    plt.show()
+
+
+def plot_volume(volumes, i_slice):
     if not isinstance(volumes, list):
         volumes = [volumes]
     for vol in volumes:
@@ -99,9 +112,10 @@ class LitModel(pl.LightningModule):
         if self.args.verbose:
             print(msg)
 
-    def log_metric(self, name, value):
+    def log_metric(self, name, value, on_step=None, on_epoch=None):
         if self.logger:
-            self.log(name, value, logger=True)
+            self.log(name, value, on_step=on_step, on_epoch=on_epoch,
+                     logger=True)
         if self.args.hparam_search:
             tune.report(value)
 
@@ -148,7 +162,7 @@ class LitModel(pl.LightningModule):
         # Compute loss
         loss = self.loss_fn(pred, y)
 
-        return {"loss": loss}
+        return {"loss": loss.cpu()}
 
     def training_epoch_end(self, outputs):
         # Stack all values to a dict
@@ -171,18 +185,21 @@ class LitModel(pl.LightningModule):
         return {
             "inp": x.cpu(),
             "target_seg": y.cpu(),
-            "loss": loss,
+            "loss": loss.cpu(),
             "anomaly_map": pred.cpu(),
         }
 
     def validation_epoch_end(self, outputs):
-        # val_start = time()
+        self.print_("Validating")
+        val_start = time()
         # Stack all values to a dict
         out = self.stack_outputs(outputs)
 
         # Compute average precision
+        # Only use half of the total validation samples to reduce time
+        val_samples = len(out["anomaly_map"])
         ap = evaluation.compute_average_precision(
-            out["anomaly_map"], torch.where(out["target_seg"] > 0, 1, 0))
+            out["anomaly_map"][:val_samples // 3], torch.where(out["target_seg"] > 0, 1, 0)[:val_samples // 3])
 
         self.log_metric("ap", ap)
         self.log_metric("val_loss", out["loss"].mean())
@@ -190,6 +207,7 @@ class LitModel(pl.LightningModule):
         # Tensorboard logs
         if self.logger:
             # log a reconstructed sample
+            self.print_("Logging a validation sample to tensorboard")
             fig = self.plot_reconstruction(
                 out["inp"], out["anomaly_map"], out["target_seg"])
             tb = self.logger.experiment
@@ -201,17 +219,17 @@ class LitModel(pl.LightningModule):
 
         # Get epoch timings
         time_elapsed, time_per_epoch, time_left = utils.get_training_timings(
-            self.start_time, self.current_epoch, self.args.max_epochs
+            self.start_time, self.current_epoch * args.val_every_epoch, self.args.max_epochs
         )
         # Print validation summary
         self.print_(
-            f"Pred max: {out['anomaly_map'].max()}, pred min: {out['anomaly_map'].min()}")
-        # self.print_(f"Time for validation: {time() - val_start:.2f}s")
+            f"Pred max: {out['anomaly_map'].max():.4f}, pred min: {out['anomaly_map'].min():.4f}")
         self.print_(f"Val loss: {out['loss'].mean():.4f}, "
                     f"average precision val: {ap:.4f}\n"
                     f"Time elapsed: {time_elapsed}, "
                     f"Time left: {time_left}, "
-                    f"Time per epoch: {time_per_epoch}")
+                    f"Time per epoch: {time_per_epoch}, "
+                    f"Time for validation: {time() - val_start:.2f}s")
 
     def test_step(self, batch, batch_idx):
         x, y = batch
@@ -245,7 +263,7 @@ class LitModel(pl.LightningModule):
             "target_seg": y.cpu(),
             "name": name,
             "anomaly": anomaly,
-            "loss": loss,
+            "loss": loss.cpu(),
             "anomaly_map": pred,
         }
 
@@ -267,9 +285,7 @@ class LitModel(pl.LightningModule):
 
         # Get labels from segmentation masks and anomaly maps
         target_label = torch.where(target_seg.sum((1, 2, 3)) > 0, 1, 0)
-        pred_label = evaluation.fpi_sample_score_list(
-            predictions=pred.reshape(-1, *self.args.volume_shape)
-        )
+        pred_label = evaluation.fpi_sample_score_list(predictions=pred)
 
         # Perform evaluation for all anomalies separately
         print("----- SAMPLE-WISE EVALUATION -----")
@@ -366,12 +382,13 @@ def train(args, trainer, train_files):
     training_files = train_files[:split_idx]
     val_files = train_files[split_idx:]
     utils.printer(f"Training with {len(training_files)} files", args.verbose)
+    utils.printer(f"Validating on {len(val_files)} files", args.verbose)
 
     # Create Datasets and Dataloaders
     train_ds = PatchSwapDataset(training_files, args.img_size,
                                 args.slices_lower_upper, data=args.data)
     trainloader = DataLoader(train_ds, batch_size=args.batch_size,
-                             num_workers=args.num_workers)
+                             num_workers=args.num_workers, shuffle=True)
     val_ds = PatchSwapDataset(val_files, args.img_size,
                               args.slices_lower_upper, data=args.data)
     valloader = DataLoader(val_ds, batch_size=args.batch_size,
@@ -384,6 +401,12 @@ def train(args, trainer, train_files):
     model.start_time = time()
     utils.printer("Start training", args.verbose)
     trainer.fit(model, trainloader, valloader)
+
+    # Delete train data to free memory
+    trainer.train_dataloader = None
+    trainer.val_dataloaders = None
+    del train_ds, trainloader, val_ds, valloader
+    gc.collect()
 
     # Return the trained model
     return model
@@ -421,8 +444,8 @@ if __name__ == '__main__':
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--model_ckpt", type=str, default=None)
     parser.add_argument("--verbose", type=bool, default=True)
-    parser.add_argument("--val_every_epoch", type=int, default=1)
-    parser.add_argument("--val_fraction", type=int, default=0.1)
+    parser.add_argument("--val_every_epoch", type=float, default=1/3)
+    parser.add_argument("--val_fraction", type=float, default=0.05)
     parser.add_argument("--no_load_to_ram", dest="load_to_ram",
                         action="store_false")
     # Data params
@@ -451,7 +474,7 @@ if __name__ == '__main__':
                         default="unet")
     parser.add_argument("--model_width", type=int, default=4)
     # Real Hyperparameters
-    parser.add_argument("--max_epochs", type=int, default=10)
+    parser.add_argument("--max_epochs", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
@@ -468,6 +491,14 @@ if __name__ == '__main__':
     # Reproducibility
     pl.seed_everything(args.seed)
 
+    # Handle fractional validations
+    if args.val_every_epoch < 1:
+        check_val_every_n_epoch = 1
+        val_check_interval = args.val_every_epoch
+    else:
+        check_val_every_n_epoch = args.val_every_epoch
+        val_check_interval = 1
+
     # Save number of slices per sample as a parameters
     # args.n_slices = args.slices_lower_upper[1] - args.slices_lower_upper[0]
     args.slices_lower_upper = None
@@ -480,27 +511,27 @@ if __name__ == '__main__':
     # train_files = train_files[:50]
     # test_files = test_files[:10]
 
+    callbacks = [LitProgressBar()]
+
     # Init logger
     if args.debug:
         logger = None
-        callbacks = []
     else:
         logger = TensorBoardLogger(
             args.log_dir, name="patch_interpolation", log_graph=True)
         # Add a ModelCheckpoint callback. Always log last ckpt and best train
-        callbacks = [ModelCheckpoint(monitor=args.target_metric, mode='max',
-                                     save_last=True)]
-
-    callbacks.append(LitProgressBar())
+        callbacks += [ModelCheckpoint(monitor=args.target_metric, mode='max',
+                                      save_last=True)]
 
     # Init trainer
     trainer = pl.Trainer(gpus=args.gpus,
                          callbacks=callbacks,
                          logger=logger,
                          precision=args.precision,
-                         # progress_bar_refresh_rate=0,  # Disable progress bar
+                         progress_bar_refresh_rate=100,
                          checkpoint_callback=not args.debug,
-                         check_val_every_n_epoch=args.val_every_epoch,
+                         check_val_every_n_epoch=check_val_every_n_epoch,
+                         val_check_interval=val_check_interval,
                          num_sanity_val_steps=0,
                          # min_epochs=args.max_epochs,
                          max_epochs=args.max_epochs)

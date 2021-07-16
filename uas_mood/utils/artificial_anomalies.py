@@ -200,7 +200,6 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
 
     # Sample interpolation factor alpha
     alpha = random.uniform(0.05, 0.95)
-    alpha = 0.95
 
     # Target pixel value is also alpha
     patch = mask * alpha
@@ -220,7 +219,7 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
 
 if __name__ == "__main__":
     seed = 0
-    np.random.seed(seed)
+    # np.random.seed(seed)
     i_slice = 100
     path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
     volume1 = process_scan(path, size=256, slices_lower_upper=[23, 200])
@@ -229,18 +228,13 @@ if __name__ == "__main__":
     volume2 = process_scan(path, size=256, slices_lower_upper=[23, 200])
     img2 = volume2[i_slice]
     mask = sample_complete_mask(
-        n_patches=1, blur_prob=0., img=img1, size_range=[0.1, 0.4],
+        n_patches=1, blur_prob=1., img=img1, size_range=[0.5, 0.5],
         data="brain", patch_type="polygon", poly_type="cubic", n_vertices=10
     )
     patchex, label = patch_exchange(img1, img2, mask)
 
     img = (img1 + mask).clip(0., 1.)
-    plt.imshow(img, cmap="gray")
-    plt.show()
-    plt.imshow(label, cmap="gray")
-    plt.show()
-    plt.imshow(patchex, cmap="gray")
-    plt.show()
+    plot([img, label, patchex])
     import IPython
     IPython.embed()
     exit(1)

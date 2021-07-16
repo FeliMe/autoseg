@@ -252,15 +252,10 @@ def fpi_sample_score(pred) -> float:
         pred = pred.numpy()
 
     im_level_score = np.mean(pred, axis=(1, 2))
+    im_level_score_s = sorted(im_level_score)
 
-    # Take 10% sliding filter window
-    window_size = int((len(im_level_score) * 0.1) // 2) * 2 + 1
-    # Apply a 3rd polynomial savgol filter
-    im_level_score_f = savgol_filter(im_level_score, window_size, 3)
-    im_level_score_s = sorted(im_level_score_f)
-
-    # Take mean of top quartile values
-    im_level_score_s = im_level_score_s[int(len(im_level_score_s) * 0.75):]
+    # Take mean of top 90% of values
+    im_level_score_s = im_level_score_s[int(len(im_level_score_s) * 0.9):]
     sample_score = np.mean(im_level_score_s)
 
     return sample_score
