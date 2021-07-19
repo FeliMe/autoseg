@@ -12,6 +12,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from ray import tune
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -69,8 +70,13 @@ class LitModel(pl.LightningModule):
         # Network
         if args.model == "unet":
             print("Using UNet")
+            # self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
+            #                           'unet', in_channels=1, out_channels=1,
+            #                           init_features=32, pretrained=False,
+            #                           verbose=False)
             self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
-                                      'unet', in_channels=1, out_channels=1,
+                                      'unet', in_channels=self.args.slices_on_forward,
+                                      out_channels=1,
                                       init_features=32, pretrained=False,
                                       verbose=False)
             self.net.apply(models.weights_init_relu)
@@ -80,7 +86,8 @@ class LitModel(pl.LightningModule):
                                            widen_factor=args.model_width)
 
         # Example input array needed to log the graph in tensorboard
-        input_size = (1, args.img_size, args.img_size)
+        # input_size = (1, args.img_size, args.img_size)
+        input_size = (self.args.slices_on_forward, args.img_size, args.img_size)  # TODO: n channel mod
         self.example_input_array = torch.randn(
             [5, *input_size])
 
@@ -244,12 +251,18 @@ class LitModel(pl.LightningModule):
         y = y[1].cpu()
 
         # Forward from all three viewing directions
-        pred_axial = self(x.unsqueeze(1)).squeeze(1).cpu()
+        # pred_axial = self(x.unsqueeze(1)).squeeze(1).cpu()
+        x_axial = F.pad(x, (0, 0, 0, 0, 1, 1)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
+        pred_axial = self(x_axial).squeeze(1).cpu()
         # Equivalent to np.rollaxis(x, 1)
-        pred_coronal = self(x.permute(1, 0, 2).unsqueeze(1)).squeeze(1).cpu()
+        # pred_coronal = self(x.permute(1, 0, 2).unsqueeze(1)).squeeze(1).cpu()
+        x_coronal = F.pad(x.permute(1, 0, 2), (0, 0, 0, 0, 1, 1)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
+        pred_coronal = self(x_coronal).squeeze(1).cpu()
         pred_coronal = pred_coronal.permute(1, 0, 2)  # Roll back
         # Equivalent to np.rollaxis(x, 2)
-        pred_saggital = self(x.permute(2, 0, 1).unsqueeze(1)).squeeze(1).cpu()
+        # pred_saggital = self(x.permute(2, 0, 1).unsqueeze(1)).squeeze(1).cpu()
+        x_saggital = F.pad(x.permute(1, 0, 2), (0, 0, 0, 0, 1, 1)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
+        pred_saggital = self(x_saggital).squeeze(1).cpu()
         pred_saggital = pred_saggital.permute(1, 2, 0)  # Roll back
 
         # Combine viewing directions
@@ -386,11 +399,13 @@ def train(args, trainer, train_files):
 
     # Create Datasets and Dataloaders
     train_ds = PatchSwapDataset(training_files, args.img_size,
-                                args.slices_lower_upper, data=args.data)
+                                args.slices_lower_upper, data=args.data,
+                                slices_on_forward=args.slices_on_forward)
     trainloader = DataLoader(train_ds, batch_size=args.batch_size,
                              num_workers=args.num_workers, shuffle=True)
     val_ds = PatchSwapDataset(val_files, args.img_size,
-                              args.slices_lower_upper, data=args.data)
+                              args.slices_lower_upper, data=args.data,
+                              slices_on_forward=args.slices_on_forward)
     valloader = DataLoader(val_ds, batch_size=args.batch_size,
                            num_workers=args.num_workers, shuffle=True)
 
@@ -452,6 +467,7 @@ if __name__ == '__main__':
     parser.add_argument("--data", type=str, default="brain",
                         choices=["brain", "abdom"])
     parser.add_argument("--img_size", type=int, default=256)
+    parser.add_argument("--slices_on_forward", type=int, default=1)
     # parser.add_argument('--slices_lower_upper',
     #                     nargs='+', type=int, default=[23, 200])
     # parser.add_argument('--slices_lower_upper',

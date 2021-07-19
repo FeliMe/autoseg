@@ -125,7 +125,7 @@ def create_polygon(center, size, img_size, n_vertices, order):
 def sample_patch(img, size_range, data, patch_type, poly_type, n_vertices):
     """Sample a patch of random size at a random location
 
-    :param np.ndarray img: Original image to create the patch for, shape [w, h]
+    :param np.ndarray img: Original image to create the patch for, shape [c, w, h]
     :param tuple(int, int) size_range: Minimum and maximum radius as fraction of image size
     :param str data: "brain" or "abdom"
     :param str patch_type: "rectangle", "ellipse" or "polygon"
@@ -135,7 +135,8 @@ def sample_patch(img, size_range, data, patch_type, poly_type, n_vertices):
     """
     # Sample location
     back_val = 0. if data == "brain" else 1e-3
-    center = sample_location(img, back_val)
+    # center = sample_location(img, back_val)
+    center = sample_location(img[len(img) // 2], back_val)  # TODO: n channel mod
 
     # Sample size
     d = img.shape[-1]
@@ -143,7 +144,7 @@ def sample_patch(img, size_range, data, patch_type, poly_type, n_vertices):
         size_range[0] * d, size_range[1] * d, 2).round()
 
     # Create mask
-    img_size = img.shape
+    img_size = img.shape[-2:]
     if patch_type == "rectangle":
         mask = create_rectangle(
             center=center,
@@ -166,6 +167,10 @@ def sample_patch(img, size_range, data, patch_type, poly_type, n_vertices):
         )
     else:
         raise NotImplementedError
+
+    # TODO: n channel mod
+    ch = img.shape[0]
+    mask = np.repeat(mask[None], ch, axis=0)
 
     return mask
 
@@ -200,6 +205,7 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
 
     # Sample interpolation factor alpha
     alpha = random.uniform(0.05, 0.95)
+    # alpha = 0.95
 
     # Target pixel value is also alpha
     patch = mask * alpha
@@ -220,21 +226,28 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
 if __name__ == "__main__":
     seed = 0
     # np.random.seed(seed)
-    i_slice = 100
-    path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
-    volume1 = process_scan(path, size=256, slices_lower_upper=[23, 200])
-    img1 = volume1[i_slice]
-    path = "/home/felix/datasets/MOOD/brain/test/00481_uniform_addition.nii.gz"
-    volume2 = process_scan(path, size=256, slices_lower_upper=[23, 200])
-    img2 = volume2[i_slice]
+    i_slice = 128
+    n_channel_mod = 1
+    lo = n_channel_mod // 2
+    hi = n_channel_mod // 2 + 1
+    path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
+    volume1 = process_scan(path, size=256)
+    img1 = volume1[i_slice - lo: i_slice + hi]
+    # img1 = volume1[i_slice]
+    path = "/home/felix/datasets/MOOD/brain/test/00481_source_deformation.nii.gz"
+    volume2 = process_scan(path, size=256)
+    img2 = volume2[i_slice - lo: i_slice + hi]
+    # img2 = volume2[i_slice]
     mask = sample_complete_mask(
-        n_patches=1, blur_prob=1., img=img1, size_range=[0.5, 0.5],
+        n_patches=1, blur_prob=0., img=img1, size_range=[0.5, 0.5],
         data="brain", patch_type="polygon", poly_type="cubic", n_vertices=10
     )
     patchex, label = patch_exchange(img1, img2, mask)
 
     img = (img1 + mask).clip(0., 1.)
-    plot([img, label, patchex])
+    i = 0
+    plot([img[i], label[i], patchex[i]])
+    # plot([img, label, patchex])
     import IPython
     IPython.embed()
     exit(1)

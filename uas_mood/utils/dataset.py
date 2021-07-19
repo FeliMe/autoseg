@@ -126,14 +126,19 @@ class TestDataset(PreloadDataset):
 
 
 class PatchSwapDataset(PreloadDataset):
-    def __init__(self, files, img_size, slices_lower_upper, data):
+    def __init__(self, files, img_size, slices_lower_upper, data, slices_on_forward):
         super().__init__()
         assert data in ["brain", "abdom"]
         res = self.load_to_ram(files, img_size, slices_lower_upper=None)
         samples = [s for r in res for s in r]
         # Samples: list of patient volumes [slices, w, h]
+
         self.n_scans = len(samples)
         self.n_slices = -1
+        self.sample_depth = samples[0].shape[0]  # TODO: Maybe remove
+        self.slices_on_forward = slices_on_forward
+        self.mid_slice = slices_on_forward // 2
+
         self.samples = []
         for sample in samples:
             axial = sample
@@ -179,6 +184,7 @@ class PatchSwapDataset(PreloadDataset):
             n_vertices=10
         )
         patchex, label = patch_exchange(img1, img2, mask)
+        label = label[self.mid_slice][None]  # TODO: n channel mod
 
         # Convert to tensor
         patchex = torch.from_numpy(patchex)
@@ -187,21 +193,30 @@ class PatchSwapDataset(PreloadDataset):
         return patchex, label
 
     def __getitem__(self, idx):
+        # If idx is a border slice, select next of previous one TODO: Maybe remove
+        if idx % self.sample_depth == 0:
+            idx += 1  # Lower border, select next idx
+        if (idx % self.sample_depth) % (self.sample_depth - 1) == 0:
+            idx -= 1  # Upper border, select prev idx
         # Select sample
-        sample = self.samples[idx].copy()
+        # sample = self.samples[idx].copy()
+        lo = self.slices_on_forward // 2
+        hi = self.slices_on_forward // 2 + 1
+        sample = np.stack(self.samples[idx - lo:idx + hi]).copy()
 
         # Randomly select another sample at the same slice
         i_slice = idx % self.n_slices
         other_scan = random.randint(0, self.n_scans - 1)
         other_idx = other_scan * self.n_slices + i_slice
-        other_sample = self.samples[other_idx]
+        # other_sample = self.samples[other_idx]
+        other_sample = np.stack(self.samples[other_idx - lo:other_idx + hi])
 
         # Create foreign patch interpolation
         sample, patch = self.create_anomaly(sample, other_sample)
 
         # Add fake channels dimension
-        sample = sample.unsqueeze(0)
-        patch = patch.unsqueeze(0)
+        # sample = sample.unsqueeze(0)
+        # patch = patch.unsqueeze(0)
 
         return sample, patch
 
@@ -261,9 +276,9 @@ if __name__ == '__main__':
     # plot([x[1][idx], y[1][idx]])
 
     # ----- PatchSwapDataset -----
-    ds = PatchSwapDataset(
-        train_files[:20], img_size, slices_lower_upper=None, data=data)
-    idx = 128 + 409
+    ds = PatchSwapDataset(train_files[:20], img_size, slices_lower_upper=None,
+                          data=data, slices_on_forward=1)
+    idx = 128 + 0
     x, y = ds.__getitem__(idx)
     print(x.shape)
     print(y.shape, y.min(), y.max())

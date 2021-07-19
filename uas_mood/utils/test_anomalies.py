@@ -1,4 +1,6 @@
+from monai import transforms
 import numpy as np
+from scipy.ndimage import gaussian_filter
 from scipy.ndimage.morphology import binary_fill_holes
 import torch
 
@@ -235,6 +237,90 @@ def reflection_anomaly(volume, mask):
     return volume, mask
 
 
+def blur_anomaly(volume, mask, sigma=2):
+    """Replace the masked part of the volume with a blurry version.
+
+    :param np.ndarray volume: Scan to be augmented, shape [slices, h, w]
+    :param np.ndarray mask: Indicates where to add the anomaly, shape [slices, h, w]
+    :param float sigma: Strength of blur
+    """
+    # Create a blurred version of the volume
+    blurred = gaussian_filter(volume, sigma=sigma)
+
+    # Create anomaly at mask
+    volume[mask > 0] = blurred[mask > 0]
+
+    return volume, mask
+
+
+def slice_shuffle_anomaly(volume, mask):
+    """Replace the masked part of the volume with a version where the slices
+    are randomly shuffled. The shuffle axis is chosen at random
+
+    :param np.ndarray volume: Scan to be augmented, shape [slices, h, w]
+    :param np.ndarray mask: Indicates where to add the anomaly, shape [slices, h, w]
+    """
+    # Select a random shuffle axis
+    axis = np.random.randint(0, 3)
+
+    # Move this axis front
+    volume = np.rollaxis(volume, axis)
+    mask = np.rollaxis(mask, axis)
+
+    # Create a copy of the volume
+    shuffled = volume.copy()
+
+    # Create shuffling permutation
+    anomaly_inds = np.where(mask.sum((1, 2)) > 0)[0]
+    start_perm = anomaly_inds[0]
+    len_perm = len(anomaly_inds)
+    perm = np.random.permutation(len_perm) + start_perm
+
+    # Apply permutation
+    shuffled[anomaly_inds] = shuffled[perm]
+    volume[mask > 0] = shuffled[mask > 0]
+
+    # Roll axis back
+    volume = np.rollaxis(volume, 0, start=axis)
+    mask = np.rollaxis(mask, 0, start=axis)
+
+    return volume, mask
+
+
+def local_zoom_anomaly(volume, mask):
+    """Replace the masked part of the volume with a zoomed version.
+
+    :param np.ndarray volume: Scan to be augmented, shape [slices, h, w]
+    :param np.ndarray mask: Indicates where to add the anomaly, shape [slices, h, w]
+    """
+    raise NotImplementedError
+    # Create a zoomed version of the volume
+    # zoomed = transforms.RandZoom(1., min_zoom = 0.8, max_zoom=1.2)(volume)
+
+    # # Create anomaly at mask
+    # volume[mask > 0] = zoomed[mask > 0]
+    # volume_viewer(zoomed)
+
+    # return volume, mask
+
+
+def local_rotation_anomaly(volume, mask):
+    """Replace the masked part of the volume with a zoomed version.
+
+    :param np.ndarray volume: Scan to be augmented, shape [slices, h, w]
+    :param np.ndarray mask: Indicates where to add the anomaly, shape [slices, h, w]
+    """
+    raise NotImplementedError
+    # Create a rotated version of the volume
+    # max_rot = 45 * (np.pi / 180)
+    # rotated = transforms.RandRotate(prob=1., range_x=max_rot, range_y=max_rot, range_z=max_rot)(volume)
+
+    # # Create anomaly at mask
+    # volume[mask > 0] = rotated[mask > 0]
+
+    # return volume, mask
+
+
 def sample_location(volume):
     dims = np.array(np.shape(volume))
     core = dims // 2  # width of core region
@@ -294,17 +380,21 @@ def create_random_anomaly(volume, verbose=False):
         "sink_deformation",
         "source_deformation",
         "uniform_shift",
-        "reflection"
+        "reflection",
+        "local_blur",
+        "slice_shuffle",
+        # "local_rotation",
+        # "local_zoom"
     ]
     anomaly_type = np.random.choice(anomalies)
-    # anomaly_type = "uniform_shift"
+    # anomaly_type = "local_zoom"
 
     # Sample random center position inside the anatomy
     center = sample_location(volume)
 
     # Select a radius at random
     d = volume.shape[0]
-    if anomaly_type in ["uniform_addition", "noise_addition"]:
+    if anomaly_type in ["uniform_addition", "noise_addition", "slice_shuffle"]:
         min_radius = np.round(0.05 * d)
         max_radius = np.round(0.10 * d)
     else:
@@ -334,6 +424,14 @@ def create_random_anomaly(volume, verbose=False):
             volume, sphere, center, radius)
     elif anomaly_type == "uniform_shift":
         res, segmentation = uniform_shift_anomaly(volume, sphere)
+    elif anomaly_type == "local_blur":
+        res, segmentation = blur_anomaly(volume, sphere)
+    elif anomaly_type == "slice_shuffle":
+        res, segmentation = slice_shuffle_anomaly(volume, sphere)
+    elif anomaly_type == "local_zoom":
+        res, segmentation = local_zoom_anomaly(volume, sphere)
+    elif anomaly_type == "local_rotation":
+        res, segmentation = local_rotation_anomaly(volume, sphere)
     else:
         res, segmentation = reflection_anomaly(volume, sphere)
 
@@ -353,8 +451,8 @@ if __name__ == "__main__":
         volume, verbose=True)
     print(anomal_sample.min(), anomal_sample.max(), anomal_sample.mean())
     print("Visualizing")
-    volume_viewer(anomal_sample, initial_position=center)
     volume_viewer(segmentation, initial_position=center)
+    volume_viewer(anomal_sample, initial_position=center)
     import IPython
     IPython.embed()
     exit(1)

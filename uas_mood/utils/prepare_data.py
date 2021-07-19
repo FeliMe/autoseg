@@ -8,7 +8,7 @@ import shutil
 import numpy as np
 from tqdm import tqdm
 
-from uas_mood.utils.artificial_anomalies import create_random_anomaly
+from uas_mood.utils.test_anomalies import create_random_anomaly
 from uas_mood.utils.data_utils import load_nii, save_nii
 from uas_mood.utils.utils import write_file
 
@@ -141,7 +141,7 @@ def create_test_anomalies(root_dir, target_dir, segmentation_dir, label_dir):
         # Segmentation is all 0
         segmentation = np.zeros_like(volume)
         # Save
-        name = f.split('/')[-1].split(':')[0]
+        name = f.split('/')[-1].split('.')[0]
         target = os.path.join(target_dir, f"{name}_normal.nii.gz")
         seg_target = os.path.join(segmentation_dir, f"{name}_normal.nii.gz")
         label_target = os.path.join(label_dir, f"{name}_normal.nii.gz.txt")
@@ -162,7 +162,7 @@ def create_test_anomalies(root_dir, target_dir, segmentation_dir, label_dir):
         pbar.set_description(anomaly_type)
         counts[anomaly_type] += 1
         # Save
-        name = f.split('/')[-1].split(':')[0]
+        name = f.split('/')[-1].split('.')[0]
         target = os.path.join(target_dir, f"{name}_{anomaly_type}.nii.gz")
         seg_target = os.path.join(
             segmentation_dir, f"{name}_{anomaly_type}.nii.gz")

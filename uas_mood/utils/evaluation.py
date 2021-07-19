@@ -283,7 +283,7 @@ def evaluate_sample_wise(predictions, targets, verbose=True):
 
 
 def evaluate_pixel_wise(predictions, targets, ap=True, dice=False, proauc=False,
-                        n_thresh_dice=100):
+                        n_thresh_dice=10):
     if ap:
         ap = compute_average_precision(predictions, targets)
         print(f"AP: {ap:.4f}")
