@@ -61,19 +61,16 @@ def plot_volume(volumes, i_slice):
 
 
 class LitModel(pl.LightningModule):
-    def __init__(self, args=None):
+    def __init__(self, args):
         super().__init__()
 
         # Save all args
-        self.args = args
+        self.save_hyperparameters()
+        self.args = self.hparams.args
 
         # Network
-        if args.model == "unet":
+        if self.args.model == "unet":
             print("Using UNet")
-            # self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
-            #                           'unet', in_channels=1, out_channels=1,
-            #                           init_features=32, pretrained=False,
-            #                           verbose=False)
             self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
                                       'unet', in_channels=self.args.slices_on_forward,
                                       out_channels=1,
@@ -87,23 +84,15 @@ class LitModel(pl.LightningModule):
 
         # Example input array needed to log the graph in tensorboard
         # input_size = (1, args.img_size, args.img_size)
-        input_size = (self.args.slices_on_forward, args.img_size, args.img_size)  # TODO: n channel mod
+        input_size = (self.args.slices_on_forward, self.args.img_size, self.args.img_size)
         self.example_input_array = torch.randn(
             [5, *input_size])
-
-        # Print model summary
-        # from torchsummary import summary
-        # print(summary(self.net, input_size=input_size, device="cpu"))
-        # import IPython
-        # IPython.embed()
-        # exit(1)
 
         # Init Loss function
         self.loss_fn = torch.nn.BCELoss()
 
         if self.logger:
             self.logger.log_hyperparams(self.args)
-            self.save_hyperparameters()
 
     def forward(self, x):
         return self.net(x)
@@ -250,30 +239,14 @@ class LitModel(pl.LightningModule):
         # y was a tuple of (file_name, volume [slices, w, h])
         y = y[1].cpu()
 
-        p = self.args.slices_on_forward // 2
-        # Forward from all three viewing directions
-        # pred_axial = self(x.unsqueeze(1)).squeeze(1).cpu()
-        x_axial = F.pad(x, (0, 0, 0, 0, p, p)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
-        pred_axial = self(x_axial).squeeze(1).cpu()
-        # Equivalent to np.rollaxis(x, 1)
-        # pred_coronal = self(x.permute(1, 0, 2).unsqueeze(1)).squeeze(1).cpu()
-        x_coronal = F.pad(x.permute(1, 0, 2), (0, 0, 0, 0, p, p)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
-        pred_coronal = self(x_coronal).squeeze(1).cpu()
-        pred_coronal = pred_coronal.permute(1, 0, 2)  # Roll back
-        # Equivalent to np.rollaxis(x, 2)
-        # pred_saggital = self(x.permute(2, 0, 1).unsqueeze(1)).squeeze(1).cpu()
-        x_saggital = F.pad(x.permute(2, 0, 1), (0, 0, 0, 0, p, p)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
-        pred_saggital = self(x_saggital).squeeze(1).cpu()
-        pred_saggital = pred_saggital.permute(1, 2, 0)  # Roll back
-
-        # Combine viewing directions
-        pred = torch.stack([pred_axial, pred_coronal, pred_saggital]).mean(0)
+        # Forward
+        pred = self.predict_volume(x)
 
         # Compute loss
         loss = self.loss_fn(pred, y.float())
 
         return {
-            "inp": x[:, self.args.slices_on_forward // 2].unsqueeze(1).cpu(),
+            "inp": x.cpu(),
             "target_seg": y.cpu(),
             "name": name,
             "anomaly": anomaly,
@@ -368,6 +341,39 @@ class LitModel(pl.LightningModule):
             # tb.add_figure("Precision-Recall Curve", fig,
             #               global_step=self.global_step)
 
+    def predict_volume(self, x):
+        """Predict anomalies for a single volume x of shape [slices, w, h]"""
+        p = self.args.slices_on_forward // 2
+
+        # Forward from all three viewing directions
+        # pred_axial = self(x.unsqueeze(1)).squeeze(1).cpu()
+        x_axial = F.pad(x, (0, 0, 0, 0, p, p))  # Pad for unfold
+        x_axial = x_axial.unfold(0, self.args.slices_on_forward, 1)  # Create rolling window
+        x_axial = x_axial.permute(0, 3, 1, 2)  # Put unfolded dim as channel dim
+        pred_axial = self(x_axial).squeeze(1).cpu()  # Forward
+
+        # pred_coronal = self(x.permute(1, 0, 2).unsqueeze(1)).squeeze(1).cpu()
+        x_coronal = x.permute(1, 0, 2)  # Roll coronal axis front
+        x_coronal = F.pad(x_coronal, (0, 0, 0, 0, p, p))  # Pad for unfold
+        x_coronal = x_coronal.unfold(0, self.args.slices_on_forward, 1)  # Create rolling window
+        x_coronal = x_coronal.permute(0, 3, 1, 2)  # Put unfolded dim as channel dim
+        pred_coronal = self(x_coronal).squeeze(1).cpu()  # Forward
+        pred_coronal = pred_coronal.permute(1, 0, 2)  # Roll back
+
+        # pred_saggital = self(x.permute(2, 0, 1).unsqueeze(1)).squeeze(1).cpu()
+        x_saggital = x.permute(2, 0, 1)  # Roll saggital axis front
+        x_saggital = F.pad(x_saggital, (0, 0, 0, 0, p, p))  # Pad for unfold
+        x_saggital = x_saggital.unfold(0, self.args.slices_on_forward, 1)  # Create rolling window
+        x_saggital = x_saggital.permute(0, 3, 1, 2)  # Put unfolded dim as channel dim
+        pred_saggital = self(x_saggital).squeeze(1).cpu()  # Forward
+        pred_saggital = pred_saggital.permute(1, 2, 0)  # Roll back
+
+        # Combine viewing directions
+        pred = torch.stack([pred_axial, pred_coronal, pred_saggital]).mean(0)
+
+        return pred
+
+
 
 def train(args, trainer, train_files):
     # Init lighning model
@@ -399,13 +405,11 @@ def train(args, trainer, train_files):
     utils.printer(f"Validating on {len(val_files)} files", args.verbose)
 
     # Create Datasets and Dataloaders
-    train_ds = PatchSwapDataset(training_files, args.img_size,
-                                args.slices_lower_upper, data=args.data,
+    train_ds = PatchSwapDataset(training_files, args.img_size, data=args.data,
                                 slices_on_forward=args.slices_on_forward)
     trainloader = DataLoader(train_ds, batch_size=args.batch_size,
                              num_workers=args.num_workers, shuffle=True)
-    val_ds = PatchSwapDataset(val_files, args.img_size,
-                              args.slices_lower_upper, data=args.data,
+    val_ds = PatchSwapDataset(val_files, args.img_size, data=args.data,
                               slices_on_forward=args.slices_on_forward)
     valloader = DataLoader(val_ds, batch_size=args.batch_size,
                            num_workers=args.num_workers, shuffle=True)
@@ -444,7 +448,7 @@ def test(args, trainer, test_files, model=None):
     # Load data
     print("Loading data")
     t_start = time()
-    ds = TestDataset(test_files, args.img_size, args.slices_lower_upper)
+    ds = TestDataset(test_files, args.img_size)
     print(f"Finished loading data in {time() - t_start:.2f}s")
 
     # Test
@@ -519,8 +523,10 @@ if __name__ == '__main__':
     # Get train and test paths
     train_files = get_train_files(MOODROOT, args.data)
     test_files = get_test_files(MOODROOT, args.data)
-    # train_files = train_files[:50]
-    # test_files = test_files[:10]
+
+    if args.debug:
+        train_files = train_files[:50]
+        test_files = test_files[:10]
 
     callbacks = [LitProgressBar()]
 

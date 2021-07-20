@@ -191,11 +191,7 @@ class PatchSwapDataset(PreloadDataset):
         # If idx is a border slice, select next of previous one
         if idx % self.sample_depth == 0:
             idx += 1  # Lower border, select next idx
-        if idx % self.sample_depth == 1:  # TODO remove
-            idx += 1  # Upper border, select prev idx
         if (idx % self.sample_depth) % (self.sample_depth - 1) == 0:
-            idx -= 1  # Upper border, select prev idx
-        if (idx % self.sample_depth) % (self.sample_depth - 2) == 0:  # TODO remove
             idx -= 1  # Upper border, select prev idx
 
         # Select sample
