@@ -1,10 +1,10 @@
 import argparse
 from glob import glob
 import os
+from time import time
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.signal import savgol_filter
 from skimage import measure
 from sklearn.metrics import (
     auc,
@@ -283,9 +283,10 @@ def evaluate_sample_wise(predictions, targets, verbose=True):
 
 
 def evaluate_pixel_wise(predictions, targets, ap=True, dice=False, proauc=False,
-                        n_thresh_dice=10):
+                        n_thresh_dice=100):
     if ap:
-        ap = compute_average_precision(predictions, targets)
+        # ap = compute_average_precision(predictions, targets)
+        ap = np.mean([compute_average_precision(p, t) for p, t in zip(predictions, targets)])
         print(f"AP: {ap:.4f}")
     else:
         ap = 0.0
@@ -349,19 +350,28 @@ def full_evaluation_pixel(predictions, targets, anomalies):
 
     for anomaly in sorted(unique_anomalies):
         print(f"\nEvaluating performance on {anomaly}")
+        t_start = time()
 
         # Filter only relevant anomalies
-        p = torch.cat(
+        # p = torch.cat(
+        #     [m for m, a in zip(predictions, anomalies) if a == anomaly])
+        # t = torch.cat([l for l, a in zip(targets, anomalies) if a == anomaly])
+        p = torch.stack(
             [m for m, a in zip(predictions, anomalies) if a == anomaly])
-        t = torch.cat([l for l, a in zip(targets, anomalies) if a == anomaly])
+        t = torch.stack([l for l, a in zip(targets, anomalies) if a == anomaly])
 
         # Evaluate sample-wise
         evaluate_pixel_wise(p, t)
+        print(f"Time: {time() - t_start:.2f}s")
 
     print("\nEvaluating total performance")
-    _, _, th = evaluate_pixel_wise(predictions, targets, dice=True)
+    t_start = time()
+    p = torch.stack([m for m, a in zip(predictions, anomalies) if a in unique_anomalies])
+    t = torch.stack([l for l, a in zip(targets, anomalies) if a in unique_anomalies])
+    _, _, _ = evaluate_pixel_wise(p, t)
+    print(f"Time: {time() - t_start:.2f}s")
 
-    return th
+    return
 
 
 def eval_dir(pred_dir, target_dir, mode):

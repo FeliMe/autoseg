@@ -250,18 +250,19 @@ class LitModel(pl.LightningModule):
         # y was a tuple of (file_name, volume [slices, w, h])
         y = y[1].cpu()
 
+        p = self.args.slices_on_forward // 2
         # Forward from all three viewing directions
         # pred_axial = self(x.unsqueeze(1)).squeeze(1).cpu()
-        x_axial = F.pad(x, (0, 0, 0, 0, 1, 1)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
+        x_axial = F.pad(x, (0, 0, 0, 0, p, p)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
         pred_axial = self(x_axial).squeeze(1).cpu()
         # Equivalent to np.rollaxis(x, 1)
         # pred_coronal = self(x.permute(1, 0, 2).unsqueeze(1)).squeeze(1).cpu()
-        x_coronal = F.pad(x.permute(1, 0, 2), (0, 0, 0, 0, 1, 1)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
+        x_coronal = F.pad(x.permute(1, 0, 2), (0, 0, 0, 0, p, p)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
         pred_coronal = self(x_coronal).squeeze(1).cpu()
         pred_coronal = pred_coronal.permute(1, 0, 2)  # Roll back
         # Equivalent to np.rollaxis(x, 2)
         # pred_saggital = self(x.permute(2, 0, 1).unsqueeze(1)).squeeze(1).cpu()
-        x_saggital = F.pad(x.permute(1, 0, 2), (0, 0, 0, 0, 1, 1)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
+        x_saggital = F.pad(x.permute(2, 0, 1), (0, 0, 0, 0, p, p)).unfold(0, self.args.slices_on_forward, 1).permute(0, 3, 1, 2)
         pred_saggital = self(x_saggital).squeeze(1).cpu()
         pred_saggital = pred_saggital.permute(1, 2, 0)  # Roll back
 
@@ -304,14 +305,14 @@ class LitModel(pl.LightningModule):
         print("----- SAMPLE-WISE EVALUATION -----")
         evaluation.full_evaluation_sample(pred_label, target_label, anomalies)
         print("\n----- PIXEL-WISE EVALUATION -----")
-        th = evaluation.full_evaluation_pixel(pred, target_seg, anomalies)
+        evaluation.full_evaluation_pixel(pred, target_seg, anomalies)
 
         if self.logger:
             # Log to tensorboard
             tb = self.logger.experiment
 
             # Binarize map
-            bin_map = torch.where(pred > th, 1., 0.)
+            # bin_map = torch.where(pred > th, 1., 0.)
 
             unique_anomalies = set(anomalies)
             unique_anomalies.discard("normal")
@@ -323,8 +324,8 @@ class LitModel(pl.LightningModule):
                     [m for m, a in zip(inp, anomalies) if a == anomaly])
                 p = torch.cat(
                     [m for m, a in zip(pred, anomalies) if a == anomaly])
-                b = torch.cat(
-                    [m for m, a in zip(bin_map, anomalies) if a == anomaly])
+                # b = torch.cat(
+                #     [m for m, a in zip(bin_map, anomalies) if a == anomaly])
                 t = torch.cat(
                     [m for m, a in zip(target_seg, anomalies) if a == anomaly])
 
@@ -332,7 +333,7 @@ class LitModel(pl.LightningModule):
                 perm = torch.randperm(len(x))
                 x = x[perm]
                 p = p[perm]
-                b = b[perm]
+                # b = b[perm]
                 t = t[perm]
 
                 has_anomaly = torch.where(t.sum((1, 2)) > 0, True, False)
@@ -340,13 +341,13 @@ class LitModel(pl.LightningModule):
                 images = [
                     x[has_anomaly].unsqueeze(1),
                     p[has_anomaly].unsqueeze(1),
-                    b[has_anomaly].unsqueeze(1),
+                    # b[has_anomaly].unsqueeze(1),
                     t[has_anomaly].unsqueeze(1),
                 ]
                 titles = [
                     "Input image",
                     "Anomaly map",
-                    "Binarized map",
+                    # "Binarized map",
                     "Ground turth",
                 ]
 
@@ -360,12 +361,12 @@ class LitModel(pl.LightningModule):
                     f"Test samples {anomaly}", fig, global_step=self.global_step)
 
             # Log precision-recall curve to tensorboard
-            fig = evaluation.plot_prc(
-                predictions=out["anomaly_map"],
-                targets=target_seg
-            )
-            tb.add_figure("Precision-Recall Curve", fig,
-                          global_step=self.global_step)
+            # fig = evaluation.plot_prc(
+            #     predictions=out["anomaly_map"],
+            #     targets=target_seg
+            # )
+            # tb.add_figure("Precision-Recall Curve", fig,
+            #               global_step=self.global_step)
 
 
 def train(args, trainer, train_files):

@@ -195,9 +195,9 @@ class PatchSwapDataset(PreloadDataset):
     def __getitem__(self, idx):
         # If idx is a border slice, select next of previous one TODO: Maybe remove
         if idx % self.sample_depth == 0:
-            idx += 1  # Lower border, select next idx
+            idx += self.slices_on_forward // 2  # Lower border, select next idx
         if (idx % self.sample_depth) % (self.sample_depth - 1) == 0:
-            idx -= 1  # Upper border, select prev idx
+            idx -= self.slices_on_forward // 2  # Upper border, select prev idx
         # Select sample
         # sample = self.samples[idx].copy()
         lo = self.slices_on_forward // 2
