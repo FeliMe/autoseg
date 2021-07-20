@@ -190,7 +190,7 @@ class LitModel(pl.LightningModule):
         loss = self.loss_fn(pred, y)
 
         return {
-            "inp": x.cpu(),
+            "inp": x[:, self.args.slices_on_forward // 2].unsqueeze(1).cpu(),
             "target_seg": y.cpu(),
             "loss": loss.cpu(),
             "anomaly_map": pred.cpu(),
@@ -273,7 +273,7 @@ class LitModel(pl.LightningModule):
         loss = self.loss_fn(pred, y.float())
 
         return {
-            "inp": x.cpu(),
+            "inp": x[:, self.args.slices_on_forward // 2].unsqueeze(1).cpu(),
             "target_seg": y.cpu(),
             "name": name,
             "anomaly": anomaly,
@@ -469,10 +469,6 @@ if __name__ == '__main__':
                         choices=["brain", "abdom"])
     parser.add_argument("--img_size", type=int, default=256)
     parser.add_argument("--slices_on_forward", type=int, default=1)
-    # parser.add_argument('--slices_lower_upper',
-    #                     nargs='+', type=int, default=[23, 200])
-    # parser.add_argument('--slices_lower_upper',
-    #                     nargs='+', type=int, default=[79, 83])
     # Engineering params
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--precision", type=int, default=32)
@@ -517,8 +513,6 @@ if __name__ == '__main__':
         val_check_interval = 1
 
     # Save number of slices per sample as a parameters
-    # args.n_slices = args.slices_lower_upper[1] - args.slices_lower_upper[0]
-    args.slices_lower_upper = None
     args.n_slices = args.img_size
     args.volume_shape = [args.n_slices, args.img_size, args.img_size]
 

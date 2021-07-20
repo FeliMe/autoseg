@@ -176,16 +176,13 @@ def histogram_equalization(volume):
     return volume
 
 
-def process_scan(path: str, size: int = None, equalize_hist: bool = True,
-                 slices_lower_upper=None):
+def process_scan(path: str, size: int = None, equalize_hist: bool = True):
     """Load and pre-process a medical 3D scan
 
     Args:
         path (str): Path to file
         size (int): Optional, spatial dimension (height / width)
         equalize_hist (bool): Perform histogram equalization
-        slices_lower_upper (tuple or list of ints and length 2):
-            upper and lower index for slices
 
     Returns:
         volume (torch.Tensor): Loaded and pre-processed scan
@@ -194,14 +191,9 @@ def process_scan(path: str, size: int = None, equalize_hist: bool = True,
     # Load
     volume, _ = load_nii(path=path, size=size, dtype="float32")
 
-    # Select slices
-    if slices_lower_upper is not None:
-        volume = volume[..., slice(*slices_lower_upper)]
-
     # Pre-processing
     if equalize_hist:
-        # volume = histogram_equalization(volume)
-        pass  # histogram equalization did not help here
+        volume = histogram_equalization(volume)
 
     # convert from [w, h, slices] to [slices, w, h]
     # primary axis will be put first, 2 for brain, 1 for abdomen
@@ -211,8 +203,7 @@ def process_scan(path: str, size: int = None, equalize_hist: bool = True,
     return volume
 
 
-def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4,
-                      slices_lower_upper=None):
+def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4):
     """Load a segmentation file
 
     Args:
@@ -224,10 +215,6 @@ def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4,
 
     # Load
     segmentation, _ = load_nii(path, size=size, dtype='float32')
-
-    # Select slices
-    if slices_lower_upper is not None:
-        segmentation = segmentation[..., slice(*slices_lower_upper)]
 
     # Binarize
     segmentation = np.where(
@@ -243,9 +230,8 @@ def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4,
 
 if __name__ == '__main__':
     path = "/home/felix/datasets/MOOD/brain/test_label/pixel/00480_reflection.nii.gz"
-    segmentation = load_segmentation(
-        path, slices_lower_upper=[23, 200], size=128)
+    segmentation = load_segmentation(path, size=128)
     path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
-    volume = process_scan(path, size=128, slices_lower_upper=[23, 200])
+    volume = process_scan(path, size=128)
     print(volume.shape)
     volume_viewer(volume, slices_first=True)

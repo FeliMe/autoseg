@@ -40,7 +40,7 @@ class PreloadDataset(Dataset):
     def load_batch():
         pass
 
-    def load_to_ram(self, paths, img_size, slices_lower_upper):
+    def load_to_ram(self, paths, img_size):
         # Set number of cpus used
         num_cpus = os.cpu_count() - 4
 
@@ -52,17 +52,16 @@ class PreloadDataset(Dataset):
         with Pool(processes=num_cpus) as pool:
             res = pool.starmap(
                 self.load_batch,
-                zip(batches, [img_size for _ in batches],
-                    [slices_lower_upper for _ in batches])
+                zip(batches, [img_size for _ in batches])
             )
 
         return res
 
 
 class TrainDataset(PreloadDataset):
-    def __init__(self, files, img_size, slices_lower_upper):
+    def __init__(self, files, img_size):
         super().__init__()
-        res = self.load_to_ram(files, img_size, slices_lower_upper)
+        res = self.load_to_ram(files, img_size)
         samples = [s for r in res for s in r]
         self.samples = [sl for sample in samples for sl in sample]
         self.samples = [torch.from_numpy(s) for s in self.samples]
@@ -71,12 +70,11 @@ class TrainDataset(PreloadDataset):
         return len(self.samples)
 
     @staticmethod
-    def load_batch(files, img_size, slices_lower_upper):
+    def load_batch(files, img_size):
         samples = []
         for f in files:
             # Samples are shape [width, height, slices]
-            samples.append(process_scan(f, img_size, equalize_hist=True,
-                                        slices_lower_upper=slices_lower_upper))
+            samples.append(process_scan(f, img_size, equalize_hist=False))
 
         return samples
 
@@ -89,9 +87,9 @@ class TrainDataset(PreloadDataset):
 
 
 class TestDataset(PreloadDataset):
-    def __init__(self, files, img_size, slices_lower_upper):
+    def __init__(self, files, img_size):
         super().__init__()
-        res = self.load_to_ram(files, img_size, slices_lower_upper)
+        res = self.load_to_ram(files, img_size)
         samples = [s for t in res for s in t["samples"]]
         segmentations = [s for t in res for s in t["segmentations"]]
 
@@ -103,18 +101,16 @@ class TestDataset(PreloadDataset):
         return len(self.samples)
 
     @staticmethod
-    def load_batch(files, img_size, slices_lower_upper):
+    def load_batch(files, img_size):
         samples = []
         segmentations = []
         for f in files:
             # Samples are shape [width, height, slices]
-            samples.append((f, process_scan(f, img_size, equalize_hist=True,
-                                            slices_lower_upper=slices_lower_upper)))
+            samples.append((f, process_scan(f, img_size, equalize_hist=False)))
             # Load segmentation, is in folder test_label/pixel instead of test
             f_seg = f.replace("test", "test_label/pixel")
             segmentations.append(
-                (f_seg, load_segmentation(f_seg, img_size,
-                                          slices_lower_upper=slices_lower_upper)))
+                (f_seg, load_segmentation(f_seg, img_size)))
 
         return {
             "samples": samples,
@@ -126,10 +122,10 @@ class TestDataset(PreloadDataset):
 
 
 class PatchSwapDataset(PreloadDataset):
-    def __init__(self, files, img_size, slices_lower_upper, data, slices_on_forward):
+    def __init__(self, files, img_size, data, slices_on_forward):
         super().__init__()
         assert data in ["brain", "abdom"]
-        res = self.load_to_ram(files, img_size, slices_lower_upper=None)
+        res = self.load_to_ram(files, img_size)
         samples = [s for r in res for s in r]
         # Samples: list of patient volumes [slices, w, h]
 
@@ -159,12 +155,11 @@ class PatchSwapDataset(PreloadDataset):
         return len(self.samples)
 
     @staticmethod
-    def load_batch(files, img_size, slices_lower_upper):
+    def load_batch(files, img_size):
         samples = []
         for f in files:
             # Samples are shape [width, height, slices]
-            samples.append(process_scan(f, img_size, equalize_hist=True,
-                                        slices_lower_upper=slices_lower_upper))
+            samples.append(process_scan(f, img_size, equalize_hist=False))
             if np.any(np.isnan(samples[-1])):
                 print(f)
 
@@ -193,11 +188,16 @@ class PatchSwapDataset(PreloadDataset):
         return patchex, label
 
     def __getitem__(self, idx):
-        # If idx is a border slice, select next of previous one TODO: Maybe remove
+        # If idx is a border slice, select next of previous one
         if idx % self.sample_depth == 0:
-            idx += self.slices_on_forward // 2  # Lower border, select next idx
+            idx += 1  # Lower border, select next idx
+        if idx % self.sample_depth == 1:  # TODO remove
+            idx += 1  # Upper border, select prev idx
         if (idx % self.sample_depth) % (self.sample_depth - 1) == 0:
-            idx -= self.slices_on_forward // 2  # Upper border, select prev idx
+            idx -= 1  # Upper border, select prev idx
+        if (idx % self.sample_depth) % (self.sample_depth - 2) == 0:  # TODO remove
+            idx -= 1  # Upper border, select prev idx
+
         # Select sample
         # sample = self.samples[idx].copy()
         lo = self.slices_on_forward // 2
@@ -263,22 +263,23 @@ if __name__ == '__main__':
     print(f"# test_files: {len(test_files)}")
 
     # ----- TrainDataset -----
-    # ds = TrainDataset(train_files[:10], 256, slices_lower_upper=None)
+    # ds = TrainDataset(train_files[:10], 256)
     # idx = 128
     # x = ds.__getitem__(idx)
     # print(x.shape)
 
     # ----- TestDataset -----
-    # ds = TestDataset(test_files[:10], 256, slices_lower_upper=None)
+    # ds = TestDataset(test_files[:10], 256)
     # idx = 103
     # x, y = next(iter(ds))
     # print(x[1].shape, y[1].shape)
     # plot([x[1][idx], y[1][idx]])
 
     # ----- PatchSwapDataset -----
-    ds = PatchSwapDataset(train_files[:20], img_size, slices_lower_upper=None,
+    ds = PatchSwapDataset(train_files[:20], img_size,
                           data=data, slices_on_forward=1)
     idx = 128 + 0
+    idx = 1
     x, y = ds.__getitem__(idx)
     print(x.shape)
     print(y.shape, y.min(), y.max())
