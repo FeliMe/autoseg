@@ -36,7 +36,6 @@ def hparam_search(search_config, args, trainer, train_files, train_fn):
         grace_period=15,  # Run experiments at least this epochs
         reduction_factor=2)
     reporter = CLIReporter(
-        # parameter_columns=["l1", "l2", "lr", "batch_size"],
         parameter_columns=list(search_config.keys()),
         metric_columns=[args.target_metric, "training_iteration"])
     result = tune.run(

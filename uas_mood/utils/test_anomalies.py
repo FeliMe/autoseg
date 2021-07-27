@@ -428,12 +428,14 @@ def create_random_anomaly(volume, verbose=False):
         res, segmentation = blur_anomaly(volume, sphere)
     elif anomaly_type == "slice_shuffle":
         res, segmentation = slice_shuffle_anomaly(volume, sphere)
+    elif anomaly_type == "reflection":
+        res, segmentation = reflection_anomaly(volume, sphere)
     elif anomaly_type == "local_zoom":
         res, segmentation = local_zoom_anomaly(volume, sphere)
     elif anomaly_type == "local_rotation":
         res, segmentation = local_rotation_anomaly(volume, sphere)
     else:
-        res, segmentation = reflection_anomaly(volume, sphere)
+        raise NotImplementedError(f"No artificial anomaly {anomaly_type}")
 
     return res, segmentation, anomaly_type, center, radius
 

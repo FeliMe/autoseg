@@ -22,14 +22,27 @@ def plot(images):
     plt.show()
 
 
-def sample_location(img: np.ndarray, back_val: float):
-    obj_inds = np.where(img > back_val)
+def sample_location_brain(img: np.ndarray):
+    """Sample a random location in a brain mri only where there is an object"""
+    obj_inds = np.where(img > 0)
     if len(obj_inds[0]) == 0:
         center = [dim // 2 for dim in img.shape]
     else:
         location_idx = random.randint(0, len(obj_inds[0]) - 1)
         center = [obj_inds[0][location_idx],
                   obj_inds[1][location_idx]]
+    return center
+
+
+def sample_location_abdom(img: np.ndarray):
+    core_percent = 0.8
+    dims = np.array(np.shape(img))
+    core = core_percent * dims
+    offset = (1 - core_percent) * dims / 2
+    center = [
+        np.random.randint(offset[0], offset[0] + core[0]),
+        np.random.randint(offset[1], offset[1] + core[1])
+    ]
     return center
 
 
@@ -134,9 +147,10 @@ def sample_patch(img, size_range, data, patch_type, poly_type, n_vertices):
     :return np.ndarray mask: mask with same size as img with sampled patch
     """
     # Sample location
-    back_val = 0. if data == "brain" else 1e-3
-    # center = sample_location(img, back_val)
-    center = sample_location(img[len(img) // 2], back_val)  # TODO: n channel mod
+    if data == "brain":
+        center = sample_location_brain(img[len(img) // 2])
+    else:
+        center = sample_location_abdom(img[len(img) // 2])
 
     # Sample size
     d = img.shape[-1]
@@ -200,6 +214,7 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
     :param np.ndarray img1: shape [w, h]
     :param np.ndarray img2: shape [w, h]
     :param np.ndarray mask: shape [w, h], mask indicating the pixels to swap
+    :param float tolerance: tolerance for creating valid label
     """
     zero_mask = 1 - mask
 
@@ -218,6 +233,7 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
     valid_label = (
         mask * img1)[..., None] != (mask * img2)[..., None]
     valid_label = np.any(valid_label, axis=-1)
+
     label = valid_label * patch
 
     return patchex, label
@@ -225,22 +241,25 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
 
 if __name__ == "__main__":
     seed = 0
-    # np.random.seed(seed)
-    i_slice = 128
-    n_channel_mod = 1
+    np.random.seed(seed)
+    # i_slice = 128
+    i_slice = 256
+    n_channel_mod = 3
     lo = n_channel_mod // 2
     hi = n_channel_mod // 2 + 1
-    path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
-    volume1 = process_scan(path, size=256)
+    # path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
+    path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
+    volume1 = process_scan(path)
     img1 = volume1[i_slice - lo: i_slice + hi]
     # img1 = volume1[i_slice]
-    path = "/home/felix/datasets/MOOD/brain/test/00481_source_deformation.nii.gz"
-    volume2 = process_scan(path, size=256)
+    # path = "/home/felix/datasets/MOOD/brain/test/00481_source_deformation.nii.gz"
+    path = "/home/felix/datasets/MOOD/abdom/test/00332_uniform_shift.nii.gz"
+    volume2 = process_scan(path)
     img2 = volume2[i_slice - lo: i_slice + hi]
     # img2 = volume2[i_slice]
     mask = sample_complete_mask(
         n_patches=1, blur_prob=0., img=img1, size_range=[0.5, 0.5],
-        data="brain", patch_type="polygon", poly_type="cubic", n_vertices=10
+        data="abdom", patch_type="polygon", poly_type="cubic", n_vertices=10
     )
     patchex, label = patch_exchange(img1, img2, mask)
 

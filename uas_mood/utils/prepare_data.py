@@ -98,7 +98,7 @@ def sanity_check():
 def split_ds(root):
     # Init names
     train_folder = os.path.join(root, "train")
-    test_folder = os.path.join(root, "test_raw")
+    test_folder = os.path.join(root, "test_raw_tmp")
 
     # Create val- and test-folder
     os.makedirs(test_folder, exist_ok=True)
@@ -190,7 +190,7 @@ if __name__ == '__main__':
 
     if args.split:
         # Check if data is correctly downloaded
-        sanity_check()
+        # sanity_check()
         if args.data == "abdom":
             print("Splitting abdom files")
             split_ds(ABDOMROOT)

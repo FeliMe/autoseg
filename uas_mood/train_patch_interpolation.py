@@ -64,7 +64,7 @@ class LitModel(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
 
-        # Save all args
+        # Save all input args to self.hparams
         self.save_hyperparameters()
         self.args = self.hparams.args
 
@@ -272,7 +272,7 @@ class LitModel(pl.LightningModule):
 
         # Get labels from segmentation masks and anomaly maps
         target_label = torch.where(target_seg.sum((1, 2, 3)) > 0, 1, 0)
-        pred_label = evaluation.fpi_sample_score_list(predictions=pred)
+        pred_label = evaluation.sample_score_list(predictions=pred)
 
         # Perform evaluation for all anomalies separately
         print("----- SAMPLE-WISE EVALUATION -----")
@@ -341,38 +341,54 @@ class LitModel(pl.LightningModule):
             # tb.add_figure("Precision-Recall Curve", fig,
             #               global_step=self.global_step)
 
-    def predict_volume(self, x):
+    def predict_volume(self, x, batch_size=None):
         """Predict anomalies for a single volume x of shape [slices, w, h]"""
+        if batch_size is None:
+            batch_size = x.shape[0]
+
         p = self.args.slices_on_forward // 2
 
-        # Forward from all three viewing directions
-        # pred_axial = self(x.unsqueeze(1)).squeeze(1).cpu()
+        # ----- AXIAL -----
+        pred_axial = torch.empty_like(x, device="cpu")
         x_axial = F.pad(x, (0, 0, 0, 0, p, p))  # Pad for unfold
         x_axial = x_axial.unfold(0, self.args.slices_on_forward, 1)  # Create rolling window
         x_axial = x_axial.permute(0, 3, 1, 2)  # Put unfolded dim as channel dim
-        pred_axial = self(x_axial).squeeze(1).cpu()  # Forward
+        # Batched forward
+        for i, x_ in enumerate(torch.split(x_axial, batch_size)):
+            idx = i * batch_size
+            pred_axial[idx:idx + batch_size] = self(x_).squeeze(1).cpu()
+        # pred_axial = self(x_axial).squeeze(1).cpu()  # Forward
 
-        # pred_coronal = self(x.permute(1, 0, 2).unsqueeze(1)).squeeze(1).cpu()
+        # ----- CORONAL -----
+        pred_coronal = torch.empty_like(x, device="cpu")
         x_coronal = x.permute(1, 0, 2)  # Roll coronal axis front
         x_coronal = F.pad(x_coronal, (0, 0, 0, 0, p, p))  # Pad for unfold
         x_coronal = x_coronal.unfold(0, self.args.slices_on_forward, 1)  # Create rolling window
         x_coronal = x_coronal.permute(0, 3, 1, 2)  # Put unfolded dim as channel dim
-        pred_coronal = self(x_coronal).squeeze(1).cpu()  # Forward
+        # Batched forward
+        for i, x_ in enumerate(torch.split(x_coronal, batch_size)):
+            idx = i * batch_size
+            pred_coronal[idx:idx + batch_size] = self(x_).squeeze(1).cpu()
+        # pred_coronal = self(x_coronal).squeeze(1).cpu()  # Forward
         pred_coronal = pred_coronal.permute(1, 0, 2)  # Roll back
 
-        # pred_saggital = self(x.permute(2, 0, 1).unsqueeze(1)).squeeze(1).cpu()
-        x_saggital = x.permute(2, 0, 1)  # Roll saggital axis front
-        x_saggital = F.pad(x_saggital, (0, 0, 0, 0, p, p))  # Pad for unfold
-        x_saggital = x_saggital.unfold(0, self.args.slices_on_forward, 1)  # Create rolling window
-        x_saggital = x_saggital.permute(0, 3, 1, 2)  # Put unfolded dim as channel dim
-        pred_saggital = self(x_saggital).squeeze(1).cpu()  # Forward
-        pred_saggital = pred_saggital.permute(1, 2, 0)  # Roll back
+        # ----- SAGITTAL -----
+        pred_sagittal = torch.empty_like(x, device="cpu")
+        x_sagittal = x.permute(2, 0, 1)  # Roll saggital axis front
+        x_sagittal = F.pad(x_sagittal, (0, 0, 0, 0, p, p))  # Pad for unfold
+        x_sagittal = x_sagittal.unfold(0, self.args.slices_on_forward, 1)  # Create rolling window
+        x_sagittal = x_sagittal.permute(0, 3, 1, 2)  # Put unfolded dim as channel dim
+        # Batched forward
+        for i, x_ in enumerate(torch.split(x_sagittal, batch_size)):
+            idx = i * batch_size
+            pred_sagittal[idx:idx + batch_size] = self(x_).squeeze(1).cpu()
+        # pred_sagittal = self(x_sagittal).squeeze(1).cpu()  # Forward
+        pred_sagittal = pred_sagittal.permute(1, 2, 0)  # Roll back
 
         # Combine viewing directions
-        pred = torch.stack([pred_axial, pred_coronal, pred_saggital]).mean(0)
+        pred = torch.stack([pred_axial, pred_coronal, pred_sagittal]).mean(0)
 
         return pred
-
 
 
 def train(args, trainer, train_files):
@@ -464,6 +480,8 @@ if __name__ == '__main__':
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--model_ckpt", type=str, default=None)
     parser.add_argument("--verbose", type=bool, default=True)
+    parser.add_argument("--max_train_files", type=int, default=None)
+    parser.add_argument("--max_test_files", type=int, default=None)
     parser.add_argument("--val_every_epoch", type=float, default=1/3)
     parser.add_argument("--val_fraction", type=float, default=0.05)
     parser.add_argument("--no_load_to_ram", dest="load_to_ram",
@@ -471,8 +489,8 @@ if __name__ == '__main__':
     # Data params
     parser.add_argument("--data", type=str, default="brain",
                         choices=["brain", "abdom"])
-    parser.add_argument("--img_size", type=int, default=256)
-    parser.add_argument("--slices_on_forward", type=int, default=1)
+    parser.add_argument("--img_size", type=int, default=None)
+    parser.add_argument("--slices_on_forward", type=int, default=3)
     # Engineering params
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--precision", type=int, default=32)
@@ -516,6 +534,10 @@ if __name__ == '__main__':
         check_val_every_n_epoch = args.val_every_epoch
         val_check_interval = 1
 
+    # Select default img_size
+    if args.img_size is None and args.data == "brain": args.img_size = 256
+    if args.img_size is None and args.data == "abdom": args.img_size = 512
+
     # Save number of slices per sample as a parameters
     args.n_slices = args.img_size
     args.volume_shape = [args.n_slices, args.img_size, args.img_size]
@@ -523,6 +545,11 @@ if __name__ == '__main__':
     # Get train and test paths
     train_files = get_train_files(MOODROOT, args.data)
     test_files = get_test_files(MOODROOT, args.data)
+
+    if args.max_train_files is not None:
+        train_files = train_files[:args.max_train_files]
+    if args.max_test_files is not None:
+        test_files = test_files[:args.max_test_files]
 
     if args.debug:
         train_files = train_files[:50]

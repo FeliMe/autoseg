@@ -115,13 +115,18 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
     plot_ax(ax[1], volume.permute(1, 0, 2), initial_position[1],
             "coronal")  # saggital [h, slices, w]
     plot_ax(ax[2], volume.permute(2, 0, 1), initial_position[0],
-            "saggital")  # coronal [w, slices, h]
+            "sagittal")  # coronal [w, slices, h]
     fig.canvas.mpl_connect('key_press_event', process_key)
     print("Plotting volume, navigate:"
           "\naxial with 'j', 'k'"
           "\ncoronal with 'u', 'i'"
           "\nsaggital with 'h', 'l'")
     plt.show()
+
+
+def write_txt(path: str, msg: str) -> None:
+    with open(path, "w") as f:
+        f.write(msg)
 
 
 def load_nii(path: str, size: int = None, dtype: str = "float32"):
@@ -150,14 +155,17 @@ def load_nii(path: str, size: int = None, dtype: str = "float32"):
     # Resize if size is given and if necessary
     if size is not None and (volume.shape[0] != size or volume.shape[1] != size):
         order = 1 if "float" in dtype else 0
-        volume = resize(volume, [size, size, volume.shape[-1]], order=order)
+        order = 0
+        volume = resize(volume, [size, size, size], order=order)
 
     volume = volume.astype(np.dtype(dtype))
 
     return volume, affine
 
 
-def save_nii(path: str, volume: np.ndarray, affine: np.ndarray, dtype: str = "float32"):
+def save_nii(path: str, volume: np.ndarray, affine: np.ndarray,
+             dtype: str = "float32", primary_axis: int = 0):
+    volume = np.moveaxis(volume, 0, primary_axis)
     nib.save(nib.Nifti1Image(volume.astype(dtype), affine), path)
 
 
@@ -176,20 +184,23 @@ def histogram_equalization(volume):
     return volume
 
 
-def process_scan(path: str, size: int = None, equalize_hist: bool = True):
+def process_scan(path: str, size: int = None, equalize_hist: bool = False,
+                 return_affine: bool = False) -> np.ndarray:
     """Load and pre-process a medical 3D scan
 
     Args:
         path (str): Path to file
         size (int): Optional, spatial dimension (height / width)
         equalize_hist (bool): Perform histogram equalization
+        return_affine (bool): Whether to return the affine transformation matrix
 
     Returns:
         volume (torch.Tensor): Loaded and pre-processed scan
+        affine (np.ndarray): Affine transformation matrix
     """
 
     # Load
-    volume, _ = load_nii(path=path, size=size, dtype="float32")
+    volume, affine = load_nii(path=path, size=size, dtype="float32")
 
     # Pre-processing
     if equalize_hist:
@@ -198,9 +209,12 @@ def process_scan(path: str, size: int = None, equalize_hist: bool = True):
     # convert from [w, h, slices] to [slices, w, h]
     # primary axis will be put first, 2 for brain, 1 for abdomen
     primary_axis = 2
-    volume = np.rollaxis(volume, primary_axis)
+    volume = np.moveaxis(volume, primary_axis, 0)
 
-    return volume
+    if return_affine:
+        return volume, affine
+    else:
+        return volume
 
 
 def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4):
@@ -229,9 +243,13 @@ def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4):
 
 
 if __name__ == '__main__':
-    path = "/home/felix/datasets/MOOD/brain/test_label/pixel/00480_reflection.nii.gz"
-    segmentation = load_segmentation(path, size=128)
-    path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
-    volume = process_scan(path, size=128)
+    size = 256
+    # path = "/home/felix/datasets/MOOD/brain/test_label/pixel/00480_reflection.nii.gz"
+    path = "/home/felix/datasets/MOOD/abdom/test_label/pixel/00330_slice_shuffle.nii.gz"
+    segmentation = load_segmentation(path, size=size)
+    # path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
+    path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
+    volume = process_scan(path, size=size, equalize_hist=False)
     print(volume.shape)
     volume_viewer(volume, slices_first=True)
+    import IPython ; IPython.embed() ; exit(1)

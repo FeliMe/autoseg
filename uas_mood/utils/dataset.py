@@ -131,18 +131,15 @@ class PatchSwapDataset(PreloadDataset):
 
         self.n_scans = len(samples)
         self.n_slices = -1
-        self.sample_depth = samples[0].shape[0]  # TODO: Maybe remove
+        self.sample_depth = samples[0].shape[0]
         self.slices_on_forward = slices_on_forward
         self.mid_slice = slices_on_forward // 2
 
         self.samples = []
         for sample in samples:
             axial = sample
-            # axial = axial[11:216] if data == "brain" else axial
             coronal = np.rollaxis(sample, 1)
-            # coronal = coronal[27:231] if data == "brain" else coronal
             saggital = np.rollaxis(sample, 2)
-            # saggital = saggital[13:247] if data == "brain" else saggital
             self.samples += [sl for sl in axial]
             self.samples += [sl for sl in coronal]
             self.samples += [sl for sl in saggital]
@@ -173,13 +170,14 @@ class PatchSwapDataset(PreloadDataset):
             img1 (torch.Tensor): shape [w, h]
             img2 (torch.Tensor): shape [w, h]
         """
+        size_range = [.1, .5] if self.data == "brain" else [.2, .6]
         mask = sample_complete_mask(
-            n_patches=1, blur_prob=0., img=img1, size_range=[0.1, 0.5],
+            n_patches=1, blur_prob=0., img=img1, size_range=size_range,
             data=self.data, patch_type="polygon", poly_type="cubic",
             n_vertices=10
         )
         patchex, label = patch_exchange(img1, img2, mask)
-        label = label[self.mid_slice][None]  # TODO: n channel mod
+        label = label[self.mid_slice][None]
 
         # Convert to tensor
         patchex = torch.from_numpy(patchex)
@@ -250,8 +248,8 @@ def get_test_files(root: str, body_region: str):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    data = "brain"
-    # data = "abdom"
+    # data = "brain"
+    data = "abdom"
     img_size = 256 if data == "brain" else 512
     train_files = get_train_files(MOODROOT, data)
     test_files = get_test_files(MOODROOT, data)
@@ -272,10 +270,9 @@ if __name__ == '__main__':
     # plot([x[1][idx], y[1][idx]])
 
     # ----- PatchSwapDataset -----
-    ds = PatchSwapDataset(train_files[:20], img_size,
+    ds = PatchSwapDataset(train_files[:10], img_size,
                           data=data, slices_on_forward=1)
-    idx = 128 + 0
-    idx = 1
+    idx = 256 + 0
     x, y = ds.__getitem__(idx)
     print(x.shape)
     print(y.shape, y.min(), y.max())
