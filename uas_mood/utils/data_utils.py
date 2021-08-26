@@ -3,13 +3,19 @@ import numpy as np
 from skimage.exposure import equalize_hist
 from skimage.transform import resize
 import torch
-import torch.nn.functional as F
 
 # matplotlib can't be imported in a read-only filesystem
 try:
     import matplotlib.pyplot as plt
 except FileNotFoundError:
     pass
+
+
+def plot(image):
+    plt.figure(figsize=(4, 4))
+    plt.axis("off")
+    plt.imshow(image, cmap="gray", vmin=0., vmax=1.)
+    plt.show()
 
 
 def volume_viewer(volume, initial_position=None, slices_first=False):
@@ -69,17 +75,14 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
         # Convert to numpy
         if isinstance(volume, torch.Tensor):
             volume = volume.numpy()
-        # if isinstance(volume, np.ndarray):
-        #     volume = torch.from_numpy(volume.copy())
 
         # Omit batch dimension
         if volume.ndim == 4:
             volume = volume[0]
 
-        # If first dimension is slices, put it last
-        if slices_first:
-            volume = np.transpose(volume , (1, 2, 0))
-            # volume = volume.permute(1, 2, 0)
+        # If image is not loaded with slices_first, put slices dimension first
+        if not slices_first:
+            volume = np.moveaxis(volume, 2, 0)
 
         # Pad slices
         if volume.shape[0] < volume.shape[1]:
@@ -87,13 +90,9 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
             pad = [(0, 0)] * volume.ndim
             pad[0] = (pad_size, pad_size)
             volume = np.pad(volume, pad)
-            # volume = F.pad(volume, [0, 0, 0, 0, pad, pad])
 
-        # Transform such that axial view is first
-        # volume = torch.flip(volume, [2, 1, 0])
-        # volume = volume.permute(2, 1, 0)
-        volume = np.flip(volume, (2, 1, 0))
-        volume = np.transpose(volume, (2, 1, 0))
+        # Flip directions for display
+        volume = np.flip(volume, (0, 1, 2))
 
         return volume
 
@@ -102,7 +101,6 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
         shape = ax.volume.shape
         d = shape[0]
         ax.index = d - index
-        # ax.index = index
         aspect = shape[2] / shape[1]
         ax.imshow(ax.volume[ax.index], aspect=aspect, vmin=0., vmax=1.)
         ax.set_title(title)
@@ -120,15 +118,11 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
 
     # Volume shape [slices, h, w]
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-    plot_ax(ax[0], volume, initial_position[2],
+    plot_ax(ax[0], np.transpose(volume, (0, 2, 1)), initial_position[2],
             "axial")  # axial [slices, h, w]
-    # plot_ax(ax[1], volume.permute(1, 0, 2), initial_position[1],
-    #         "coronal")  # saggital [h, slices, w]
-    # plot_ax(ax[2], volume.permute(2, 0, 1), initial_position[0],
-    #         "sagittal")  # coronal [w, slices, h]
-    plot_ax(ax[1], np.transpose(volume, (1, 0, 2)), initial_position[1],
+    plot_ax(ax[1], np.transpose(volume, (2, 0, 1)), initial_position[1],
             "coronal")  # saggital [h, slices, w]
-    plot_ax(ax[2], np.transpose(volume, (2, 0, 1)), initial_position[0],
+    plot_ax(ax[2], np.transpose(volume, (1, 0, 2)), initial_position[0],
             "sagittal")  # coronal [w, slices, h]
     fig.canvas.mpl_connect('key_press_event', process_key)
     print("Plotting volume, navigate:"
@@ -143,13 +137,15 @@ def write_txt(path: str, msg: str) -> None:
         f.write(msg)
 
 
-def load_nii(path: str, size: int = None, dtype: str = "float32"):
+def load_nii(path: str, size: int = None, primary_axis: int = 0,
+             dtype: str = "float32"):
     """Load a neuroimaging file with nibabel, [w, h, slices]
     https://nipy.org/nibabel/reference/nibabel.html
 
     Args:
         path (str): Path to nii file
         size (int): Optional. Output size for h and w. Only supports rectangles
+        primary_axis (int): Primary axis (the one to slice along, usually 2)
         dtype (str): Numpy datatype
 
     Returns:
@@ -167,18 +163,33 @@ def load_nii(path: str, size: int = None, dtype: str = "float32"):
         volume = volume.squeeze(-1)
 
     # Resize if size is given and if necessary
-    if size is not None and (volume.shape[0] != size or volume.shape[1] != size):
-        order = 1 if "float" in dtype else 0
-        order = 0
-        volume = resize(volume, [size, size, size], order=order)
+    if size is not None and np.any(np.array(volume.shape) != size):
+        volume = resize(volume, [size, size, size])
 
+    # Convert
     volume = volume.astype(np.dtype(dtype))
+
+    # Move primary axis to first dimension
+    volume = np.moveaxis(volume, primary_axis, 0)
 
     return volume, affine
 
 
-def save_nii(path: str, volume: np.ndarray, affine: np.ndarray,
-             dtype: str = "float32", primary_axis: int = 0):
+def save_nii(path: str, volume: np.ndarray, affine: np.ndarray = None,
+             dtype: str = "float32", primary_axis: int = 0) -> None:
+    """Save a neuroimaging file (.nii) with nibabel
+    https://nipy.org/nibabel/reference/nibabel.html
+
+    Args:
+        path (str): Path to save file at
+        volume (np.ndarray): Image as numpy array
+        affine (np.ndarray): Affine transformation that determines the
+                             world-coordinates of the image elements
+        dtype (str): Numpy dtype of saved image
+        primary_axis (int): The primary axis. Needs to be put back in place
+    """
+    if affine is None:
+        affine = np.eye(4)
     volume = np.moveaxis(volume, 0, primary_axis)
     nib.save(nib.Nifti1Image(volume.astype(dtype), affine), path)
 
@@ -214,16 +225,11 @@ def process_scan(path: str, size: int = None, equalize_hist: bool = False,
     """
 
     # Load
-    volume, affine = load_nii(path=path, size=size, dtype="float32")
+    volume, affine = load_nii(path=path, size=size, primary_axis=2, dtype="float32")
 
     # Pre-processing
     if equalize_hist:
         volume = histogram_equalization(volume)
-
-    # convert from [w, h, slices] to [slices, w, h]
-    # primary axis will be put first, 2 for brain, 1 for abdomen
-    primary_axis = 2
-    volume = np.moveaxis(volume, primary_axis, 0)
 
     if return_affine:
         return volume, affine
@@ -242,26 +248,21 @@ def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4):
     """
 
     # Load
-    segmentation, _ = load_nii(path, size=size, dtype='float32')
+    segmentation, _ = load_nii(path, size=size, primary_axis=2, dtype='float32')
 
     # Binarize
     segmentation = np.where(
         segmentation > bin_threshold, 1, 0).astype(np.short)
-
-    # convert from [w, h, slices] to [slices, w, h]
-    # primary axis will be put first, 2 for brain, 1 for abdomen
-    primary_axis = 2
-    segmentation = np.rollaxis(segmentation, primary_axis)
 
     return segmentation
 
 
 if __name__ == '__main__':
     size = 256
-    # path = "/home/felix/datasets/MOOD/brain/test_label/pixel/00480_reflection.nii.gz"
-    path = "/home/felix/datasets/MOOD/abdom/test_label/pixel/00330_slice_shuffle.nii.gz"
-    segmentation = load_segmentation(path, size=size)
-    # path = "/home/felix/datasets/MOOD/brain/test/00480_reflection.nii.gz"
+    # path = "/home/felix/datasets/MOOD/brain/test_label/pixel/00480_uniform_shift.nii.gz"
+    # path = "/home/felix/datasets/MOOD/abdom/test_label/pixel/00330_slice_shuffle.nii.gz"
+    # segmentation = load_segmentation(path, size=size)
+    # path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
     path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
     volume = process_scan(path, size=size, equalize_hist=False)
     print(volume.shape)

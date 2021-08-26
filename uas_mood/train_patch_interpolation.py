@@ -14,9 +14,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from uas_mood.models import models, unet
+from uas_mood.models import models
 from uas_mood.utils import evaluation, utils
-from uas_mood.utils.data_utils import save_nii, volume_viewer
 from uas_mood.utils.dataset import (
     MOODROOT,
     PatchSwapDataset,
@@ -76,13 +75,8 @@ class LitModel(pl.LightningModule):
         # Network
         if self.args.model == "unet":
             self.print_("Using UNet")
-            self.net = unet.UNet(in_channels=self.args.slices_on_forward,
+            self.net = models.UNet(in_channels=self.args.slices_on_forward,
                                  out_channels=1, init_features=32)
-            # self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
-            #                           'unet', in_channels=self.args.slices_on_forward,
-            #                           out_channels=1,
-            #                           init_features=32, pretrained=False,
-            #                           verbose=False)
             self.net.apply(models.weights_init_relu)
         else:
             self.print_("Using Wide ResNet")
