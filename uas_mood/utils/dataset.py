@@ -63,34 +63,6 @@ class PreloadDataset(Dataset):
         return res
 
 
-class TrainDataset(PreloadDataset):
-    def __init__(self, files, img_size):
-        super().__init__()
-        res = self.load_to_ram(files, img_size)
-        samples = [s for r in res for s in r]
-        self.samples = [sl for sample in samples for sl in sample]
-        self.samples = [torch.from_numpy(s) for s in self.samples]
-
-    def __len__(self):
-        return len(self.samples)
-
-    @staticmethod
-    def load_batch(files, img_size):
-        samples = []
-        for f in files:
-            # Samples are shape [width, height, slices]
-            samples.append(process_scan(f, img_size, equalize_hist=False))
-
-        return samples
-
-    def __getitem__(self, idx):
-        # Select sample
-        sample = self.samples[idx]
-        # Add fake channels dimension
-        sample = sample.unsqueeze(0)
-        return sample
-
-
 class TestDataset(PreloadDataset):
     def __init__(self, files, img_size):
         super().__init__()
@@ -130,18 +102,25 @@ class PatchSwapDataset(PreloadDataset):
     def __init__(self, files, img_size, data, slices_on_forward):
         super().__init__()
         assert data in ["brain", "abdom"]
+        assert slices_on_forward in [1, 3], "PatchSwapDataset only works with slices_on_forward 1 or 3"
+
         res = self.load_to_ram(files, img_size)
         samples = [s for r in res for s in r]
         # Samples: list of patient volumes [slices, w, h]
 
+        # Number of scans in dataset
         self.n_scans = len(samples)
-        self.n_slices = -1
+        # Number of slices per scan (3 viewing directions)
+        self.n_slices = np.array(samples[0].shape).sum()
+        # Number of slices in one viewing direction
         self.sample_depth = samples[0].shape[0]
+
         self.slices_on_forward = slices_on_forward
         self.mid_slice = slices_on_forward // 2
 
         self.samples = []
         for sample in samples:
+            # Add slices from all three viewing directions
             axial = sample
             coronal = np.moveaxis(sample, 1, 0)
             sagittal = np.moveaxis(sample, 2, 0)
@@ -176,12 +155,17 @@ class PatchSwapDataset(PreloadDataset):
             img2 (torch.Tensor): shape [w, h]
         """
         size_range = [.1, .5] if self.data == "brain" else [.2, .6]
+
+        # Sample an anomaly mask
         mask = sample_complete_mask(
             n_patches=1, blur_prob=0., img=img1, size_range=size_range,
             data=self.data, patch_type="polygon", poly_type="cubic",
             n_vertices=10
         )
+
+        # Swap patches between img1 and img2 at mask
         patchex, label = patch_exchange(img1, img2, mask)
+        # Select mask of middle slice as target
         label = label[self.mid_slice][None]
 
         # Convert to tensor
@@ -191,11 +175,12 @@ class PatchSwapDataset(PreloadDataset):
         return patchex, label
 
     def __getitem__(self, idx):
-        # If idx is a border slice, select next of previous one
-        if idx % self.sample_depth == 0:
-            idx += 1  # Lower border, select next idx
-        if (idx % self.sample_depth) % (self.sample_depth - 1) == 0:
-            idx -= 1  # Upper border, select prev idx
+        if self.slices_on_forward == 3:
+            # If idx is a border slice, select next of previous one
+            if idx % self.sample_depth == 0:
+                idx += 1  # Lower border, select next idx
+            if (idx % self.sample_depth) % (self.sample_depth - 1) == 0:
+                idx -= 1  # Upper border, select prev idx
 
         # Select sample
         # sample = self.samples[idx].copy()
@@ -212,10 +197,6 @@ class PatchSwapDataset(PreloadDataset):
 
         # Create foreign patch interpolation
         sample, patch = self.create_anomaly(sample, other_sample)
-
-        # Add fake channels dimension
-        # sample = sample.unsqueeze(0)
-        # patch = patch.unsqueeze(0)
 
         return sample, patch
 
@@ -240,15 +221,7 @@ def get_test_files(root: str, body_region: str):
         mode (str): One of "val" or "test"
     """
     assert body_region in ["brain", "abdom"]
-
-    all_files = glob(
-        f"{os.path.join(root, body_region, 'test')}/?????_*.nii.gz")
-    files = []
-    for f in all_files:
-        if not f.endswith("_segmentation.nii.gz"):
-            files.append(f)
-
-    return files
+    return glob(f"{os.path.join(root, body_region, 'test')}/?????_*.nii.gz")
 
 
 if __name__ == '__main__':
@@ -260,12 +233,6 @@ if __name__ == '__main__':
     test_files = get_test_files(MOODROOT, data)
     print(f"# train_files: {len(train_files)}")
     print(f"# test_files: {len(test_files)}")
-
-    # ----- TrainDataset -----
-    # ds = TrainDataset(train_files[:10], 256)
-    # idx = 128
-    # x = ds.__getitem__(idx)
-    # print(x.shape)
 
     # ----- TestDataset -----
     # ds = TestDataset(test_files[:10], 256)

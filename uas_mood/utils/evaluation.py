@@ -32,20 +32,19 @@ def plot_results(images: list, titles: list, n_images=20):
     if len(images) != len(titles):
         raise RuntimeError("not the same number of images and titles")
 
+    import IPython ; IPython.embed()
     # Stack tensors to image grid and transform to numpy for plotting
     img_dict = {}
     for img, title in zip(images, titles):
         assert img[0].ndim == 3, "Invalid number of dimensions, missing channel dim?"
         img_grid = make_grid(img[:n_images].float(), nrow=1, normalize=False)
-        # img_grid = make_grid(
-        #     img[:n_images].float(), nrow=1, normalize=True, scale_each=True)
         img_grid = utils.torch2np_img(img_grid)
         img_dict[title] = img_grid
 
     n = len(images)
 
     # Construct matplotlib figure
-    fig = plt.figure(figsize=(3 * n, 1.0 * n_images))
+    fig = plt.figure(figsize=(3 * n, n_images))
     plt.axis('off')
     for i, key in enumerate(img_dict.keys()):
         a = fig.add_subplot(1, n, i + 1)
@@ -53,182 +52,6 @@ def plot_results(images: list, titles: list, n_images=20):
         a.set_title(key)
 
     return fig
-
-
-def plot_prc(predictions, targets):
-    """Returns a plot of the Precision-Recall Curve (PRC)
-
-    Args:
-        predictions (torch.Tensor): Predicted anomaly map
-        targets (torch.Tensor): Target segmentation
-
-    Returns:
-        fig (matplotlib.figure.Figure): Finished plot
-    """
-
-    precision, recall, _ = precision_recall_curve(
-        targets.view(-1), predictions.view(-1))
-    ap = compute_average_precision(predictions, targets)
-    fig = plt.figure()
-    fig.add_subplot(1, 1, 1)
-    plt.title("Precision-Recall Curve")
-    plt.plot(precision, recall, 'b', label='AP = %0.2f' % ap)
-    plt.legend(loc='lower right')
-    plt.plot([0, 1], [0, 1], 'r--')
-    plt.xlim([0, 1])
-    plt.ylim([0, 1])
-    plt.ylabel('Recall')
-    plt.xlabel('Precision')
-    return fig
-
-
-def compute_best_dice(preds, targets, n_thresh=100, verbose=True):
-    """Compute the best dice score between an anomaly map and the ground truth
-    segmentation using a greedy binary search with depth search_depth
-
-    Args:
-        preds (torch.tensor): Predicted binary anomaly map. Shape [b, c, h, w]
-        targets (torch.tensor): Target label [b] or segmentation map [b, c, h, w]
-        n_thresh (int): Number of thresholds to try
-    Returns:
-        max_dice (float): Maximal dice score
-        max_thresh (float): Threshold corresponding to maximal dice score
-    """
-    thresholds = np.linspace(preds.min(), preds.max(), n_thresh)
-    threshs = []
-    scores = []
-    for t in tqdm(thresholds, desc="DSC search", disable=not verbose):
-        # for t in thresholds:
-        dice = compute_dice(torch.where(preds > t, 1., 0.), targets)
-        scores.append(dice)
-        threshs.append(t)
-
-    scores = torch.stack(scores, 0)
-    max_thresh = threshs[scores.argmax()]
-
-    # Get best dice once again after connected component analysis
-    bin_preds = torch.where(preds > max_thresh, 1., 0.)
-    bin_preds = utils.connected_components_3d(bin_preds)
-    max_dice = compute_dice(bin_preds, targets)
-    return max_dice, max_thresh
-
-
-def compute_dice_fpr(preds, targets, max_fprs=[0.01, 0.05, 0.1]):
-    fprs, _, thresholds = compute_roc(preds, targets)
-    dices = []
-    for max_fpr in max_fprs:
-        th = thresholds[fprs < max_fpr][-1]
-        bin_preds = torch.where(preds > th, 1., 0.)
-        bin_preds = utils.connected_components_3d(bin_preds)
-        dice = compute_dice(bin_preds, targets)
-        dices.append(dice)
-        print(f"DICE{int(max_fpr * 100)}: {dice:.4f}, threshold: {th:.4f}")
-    return dices
-
-
-def compute_dice(predictions, targets) -> float:
-    """Compute the DICE score. This only works for segmentations.
-    PREDICTIONS NEED TO BE BINARY!
-
-    Args:
-        predictions (torch.tensor): Predicted binary anomaly map. Shape [b, c, h, w]
-        targets (torch.tensor): Target label [b] or segmentation map [b, c, h, w]
-    Returns:
-        dice (float)
-    """
-    if (predictions - predictions.int()).sum() > 0.:
-        raise RuntimeError("predictions for DICE score must be binary")
-    if (targets - targets.int()).sum() > 0.:
-        raise RuntimeError("targets for DICE score must be binary")
-
-    pred_sum = predictions.view(-1).sum()
-    targ_sum = targets.view(-1).sum()
-    intersection = predictions.view(-1).float() @ targets.view(-1).float()
-    dice = (2 * intersection) / (pred_sum + targ_sum)
-    return dice
-
-
-def compute_pro_auc(predictions, targets, expect_fpr=0.3, max_steps=300):
-    """Computes the PRO-score and intersection over union (IOU)
-    Code from: https://github.com/YoungGod/DFR/blob/master/DFR-source/anoseg_dfr.py
-    """
-
-    def rescale(x):
-        return (x - x.min()) / (x.max() - x.min())
-
-    if torch.is_tensor(predictions):
-        predictions = predictions.numpy()
-    if torch.is_tensor(targets):
-        targets = targets.numpy()
-
-    # Squeeze away channel dimension
-    predictions = predictions.squeeze(1)
-    targets = targets.squeeze(1)
-
-    # Binarize target segmentations
-    targets[targets <= 0.5] = 0
-    targets[targets > 0.5] = 1
-    targets = targets.astype(np.bool)
-
-    # Maximum and minimum thresholdsmax_th = scores.max()
-    max_th = predictions.max()
-    min_th = predictions.min()
-    delta = (max_th - min_th) / max_steps
-
-    pros_mean = []
-    pros_std = []
-    threds = []
-    fprs = []
-    binary_score_maps = np.zeros_like(predictions, dtype=np.bool)
-    # for step in tqdm(range(max_steps), desc="PRO AUC"):
-    for step in range(max_steps):
-        thred = max_th - step * delta
-        # segmentation
-        binary_score_maps[predictions <= thred] = 0
-        binary_score_maps[predictions > thred] = 1
-
-        pro = []    # per region overlap
-        # pro: find each connected gt region, compute the overlapped pixels between the gt region and predicted region
-        for i in range(len(binary_score_maps)):    # for i th image
-            # pro (per region level)
-            label_map = measure.label(targets[i], connectivity=2)
-            props = measure.regionprops(label_map)
-            for prop in props:
-                # find the bounding box of an anomaly region
-                x_min, y_min, x_max, y_max = prop.bbox
-                cropped_pred_label = binary_score_maps[i][x_min:x_max, y_min:y_max]
-                # cropped_mask = targets[i][x_min:x_max, y_min:y_max]   # bug!
-                cropped_targets = prop.filled_image    # corrected!
-                intersection = np.logical_and(
-                    cropped_pred_label, cropped_targets).astype(np.float32).sum()
-                pro.append(intersection / prop.area)
-
-        # against steps and average metrics on the testing data
-        pros_mean.append(np.array(pro).mean())
-        pros_std.append(np.array(pro).std())
-        # fpr for pro-auc
-        targets_neg = ~targets
-        fpr = np.logical_and(
-            targets_neg, binary_score_maps).sum() / targets_neg.sum()
-        fprs.append(fpr)
-        threds.append(thred)
-
-    # as array
-    threds = np.array(threds)
-    pros_mean = np.array(pros_mean)
-    pros_std = np.array(pros_std)
-    fprs = np.array(fprs)
-
-    # default 30% fpr vs pro, pro_auc
-    # find the indexs of fprs that is less than expect_fpr (default 0.3)
-    idx = fprs <= expect_fpr
-    fprs_selected = fprs[idx]
-    fprs_selected = rescale(fprs_selected)    # rescale fpr [0,0.3] -> [0, 1]
-    pros_mean_selected = pros_mean[idx]
-    pro_auc_score = auc(fprs_selected, pros_mean_selected)
-    print(f"PRO AUC ({int(expect_fpr*100)}% FPR): {pro_auc_score:.4f}")
-
-    return pro_auc_score
 
 
 def compute_average_precision(predictions, targets):
@@ -244,7 +67,7 @@ def compute_average_precision(predictions, targets):
     return ap
 
 
-def sample_score(pred) -> float:
+def samplewise_score(pred) -> float:
     """Compute the anomaly score for a patient volume from the predictions of
     the network.
 
@@ -252,7 +75,7 @@ def sample_score(pred) -> float:
         pred (np.ndarray or torch.Tensor): Network output for one patient volume
                                            of shape [slices, w, h]
     Returns:
-        sample_score (float): Anomaly score for that patient
+        samplewise_score (float): Anomaly score for that patient
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.numpy()
@@ -262,19 +85,19 @@ def sample_score(pred) -> float:
 
     # Take mean of highest 90% of values
     im_level_score_s = im_level_score_s[int(len(im_level_score_s) * 0.9):]
-    sample_score = np.mean(im_level_score_s)
+    samplewise_score = np.mean(im_level_score_s)
 
-    return sample_score
+    return samplewise_score
 
 
-def sample_score_list(predictions):
+def samplewise_score_list(predictions):
     """Return sample-wise anomaly scores for a list or tensor of patient volumes
     each with shape [slices, w, h]
 
     Args:
-        predictions (list of tensors or array, or tensor or array)
+        predictions (list, or iterable of tensors or array)
     """
-    return torch.tensor([sample_score(pred) for pred in predictions])
+    return torch.tensor([samplewise_score(pred) for pred in predictions])
 
 
 def evaluate_sample_wise(predictions, targets, verbose=True):
@@ -288,31 +111,14 @@ def evaluate_sample_wise(predictions, targets, verbose=True):
     return auroc, ap
 
 
-def evaluate_pixel_wise(predictions, targets, ap=True, dice=False, proauc=False,
-                        n_thresh_dice=100):
-    if ap:
-        # ap = compute_average_precision(predictions, targets)
-        ap = np.mean([compute_average_precision(p, t) for p, t in zip(predictions, targets)])
+def evaluate_pixel_wise(predictions, targets, verbose=True):
+    # ap = compute_average_precision(predictions, targets)
+    ap = np.mean([compute_average_precision(p, t) for p, t in zip(predictions, targets)])
+
+    if verbose:
         print(f"AP: {ap:.4f}")
-    else:
-        ap = 0.0
 
-    if dice:
-        dice, th = compute_best_dice(
-            predictions, targets, n_thresh=n_thresh_dice)
-        print(f"DSC: {dice:.4f}, best threshold: {th:.4f}")
-    else:
-        dice = 0.0
-        th = None
-
-    if proauc:
-        h, w = predictions.shape[-2:]
-        compute_pro_auc(
-            predictions=predictions.view(-1, 1, h, w),
-            targets=targets.view(-1, 1, h, w),
-        )
-
-    return ap, dice, th
+    return ap
 
 
 def full_evaluation_sample(predictions, targets, anomalies):
@@ -352,7 +158,9 @@ def full_evaluation_pixel(predictions, targets, anomalies):
         anomalies (list of str): Anomaly types, len = n
     """
     unique_anomalies = set(anomalies)
-    unique_anomalies.discard("normal")
+    unique_anomalies -= {"normal", ""}
+    # unique_anomalies.discard("normal")
+    # unique_anomalies.discard("")
 
     if not len(unique_anomalies) == 1:
         for anomaly in sorted(unique_anomalies):
@@ -379,19 +187,18 @@ def full_evaluation_pixel(predictions, targets, anomalies):
     print(f"Time: {time() - t_start:.2f}s")
 
 
-def ap_from_files(files):
-    pred_file, target_file = files
-    # Load files
-    pred = data_utils.load_nii(pred_file)[0]
-    target = data_utils.load_nii(target_file, size=pred.shape[-2], dtype="short")[0]
-    # Evaluate
-    return compute_average_precision(
-        torch.from_numpy(pred),
-        torch.from_numpy(target)
-    )
-
-
 def full_evaluation_pixel_memory_efficient(pred_files, target_files, anomalies, n_proc=1):
+    def ap_from_files(files):
+        pred_file, target_file = files
+        # Load files
+        pred = data_utils.load_nii(pred_file)[0]
+        target = data_utils.load_nii(target_file, size=pred.shape[-2], dtype="short")[0]
+        # Evaluate
+        return compute_average_precision(
+            torch.from_numpy(pred),
+            torch.from_numpy(target)
+        )
+
     unique_anomalies = set(anomalies)
     unique_anomalies.discard("normal")
     unique_anomalies.discard("")

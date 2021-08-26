@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from uas_mood.train_patch_interpolation import LitModel
 from uas_mood.utils.data_utils import process_scan, save_nii, write_txt
-from uas_mood.utils.evaluation import sample_score
+from uas_mood.utils.evaluation import samplewise_score
 
 
 def predict_folder(input_dir, output_dir, mode, model_ckpt, verbose):
@@ -52,7 +52,7 @@ def predict_folder(input_dir, output_dir, mode, model_ckpt, verbose):
             save_nii(t, pred, affine, primary_axis=2, dtype="float32")
         if "sample" in mode:
             t = os.path.join(output_dir, fname + ".txt")
-            pred = sample_score(pred)
+            pred = samplewise_score(pred)
             write_txt(t, str(pred))
 
 

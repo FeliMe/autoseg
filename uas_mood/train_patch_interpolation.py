@@ -283,7 +283,7 @@ class LitModel(pl.LightningModule):
 
         # Get labels from segmentation masks and anomaly maps
         target_label = torch.where(target_seg.sum((1, 2, 3)) > 0, 1, 0)
-        pred_label = evaluation.sample_score_list(predictions=pred)
+        pred_label = evaluation.samplewise_score_list(predictions=pred)
 
         # Perform evaluation for all anomalies separately
         print("----- SAMPLE-WISE EVALUATION -----")
@@ -565,6 +565,9 @@ if __name__ == '__main__':
     if args.debug:
         train_files = train_files[:40]
         # test_files = test_files[:10]
+
+    # TODO: Remove
+    test_files = test_files[:5]
 
     callbacks = [LitProgressBar()]
 

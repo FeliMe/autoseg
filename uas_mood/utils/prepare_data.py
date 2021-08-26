@@ -118,11 +118,12 @@ def split_ds(root):
     print(f"Moved {len(test_files)} fo {test_folder}")
 
 
-def create_test_anomalies(root_dir, target_dir, segmentation_dir, label_dir):
-    counts = defaultdict(int)
-    files = sorted(glob(f"{root_dir}/?????.nii.gz"))
+def create_test_anomalies(src_dir, target_dir, segmentation_dir, label_dir):
+    # Get all files from src_dir
+    files = sorted(glob(f"{src_dir}/?????.nii.gz"))
     n_files = len(files)
 
+    # Split into normal and prospecrtive anomal files
     random.shuffle(files)
     normal_idx = round(n_files * TESTNORMALFRAC)
     normal_files = files[:normal_idx]
@@ -133,18 +134,22 @@ def create_test_anomalies(root_dir, target_dir, segmentation_dir, label_dir):
     os.makedirs(segmentation_dir, exist_ok=True)
     os.makedirs(label_dir, exist_ok=True)
 
-    # Create files without anomalies
+    # Keep track of how many anomalies of each type are created
+    counts = defaultdict(int)
+
+    # Create normal files without anomalies
     print("Creating files without anomalies")
     for f in tqdm(normal_files):
         # Load volume
         volume, affine = load_nii(f, dtype="float64")
         # Segmentation is all 0
         segmentation = np.zeros_like(volume)
-        # Save
+        # Names for target files
         name = f.split('/')[-1].split('.')[0]
         target = os.path.join(target_dir, f"{name}_normal.nii.gz")
         seg_target = os.path.join(segmentation_dir, f"{name}_normal.nii.gz")
         label_target = os.path.join(label_dir, f"{name}_normal.nii.gz.txt")
+        # Save images and label
         save_nii(target, volume, affine, dtype="float32")
         save_nii(seg_target, segmentation, affine, dtype="short")
         write_file(label_target, str(0))
@@ -161,13 +166,14 @@ def create_test_anomalies(root_dir, target_dir, segmentation_dir, label_dir):
         # Update statistics
         pbar.set_description(anomaly_type)
         counts[anomaly_type] += 1
-        # Save
+        # Names for target files
         name = f.split('/')[-1].split('.')[0]
         target = os.path.join(target_dir, f"{name}_{anomaly_type}.nii.gz")
         seg_target = os.path.join(
             segmentation_dir, f"{name}_{anomaly_type}.nii.gz")
         label_target = os.path.join(
             label_dir, f"{name}_{anomaly_type}.nii.gz.txt")
+        # Save images and label
         save_nii(target, anomaly, affine, dtype="float32")
         save_nii(seg_target, segmentation, affine, dtype="short")
         write_file(label_target, str(1))
@@ -201,15 +207,17 @@ if __name__ == '__main__':
     if args.create_anomalies:
         if args.data == "abdom":
             print("Creating artificial anomalies for abdomen test")
-            create_test_anomalies(os.path.join(ABDOMROOT, "test_raw"),
-                                  os.path.join(ABDOMROOT, "test"),
-                                  os.path.join(
-                                      ABDOMROOT, "test_label", "pixel"),
-                                  os.path.join(ABDOMROOT, "test_label", "sample"))
+            create_test_anomalies(
+                src_dir=os.path.join(ABDOMROOT, "test_raw"),
+                target_dir=os.path.join(ABDOMROOT, "test"),
+                segmentation_dir=os.path.join(ABDOMROOT, "test_label", "pixel"),
+                label_dir=os.path.join(ABDOMROOT, "test_label", "sample")
+            )
         else:
             print("Creating artificial anomalies for brain test")
-            create_test_anomalies(os.path.join(BRAINROOT, "test_raw"),
-                                  os.path.join(BRAINROOT, "test"),
-                                  os.path.join(
-                                      BRAINROOT, "test_label", "pixel"),
-                                  os.path.join(BRAINROOT, "test_label", "sample"))
+            create_test_anomalies(
+                src_dir=os.path.join(BRAINROOT, "test_raw"),
+                target_dir=os.path.join(BRAINROOT, "test"),
+                segmentation_dir=os.path.join(BRAINROOT, "test_label", "pixel"),
+                label_dir=os.path.join(BRAINROOT, "test_label", "sample")
+            )

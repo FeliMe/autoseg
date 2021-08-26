@@ -1,4 +1,3 @@
-from monai import transforms
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.ndimage.morphology import binary_fill_holes
@@ -287,40 +286,6 @@ def slice_shuffle_anomaly(volume, mask):
     return volume, mask
 
 
-def local_zoom_anomaly(volume, mask):
-    """Replace the masked part of the volume with a zoomed version.
-
-    :param np.ndarray volume: Scan to be augmented, shape [slices, h, w]
-    :param np.ndarray mask: Indicates where to add the anomaly, shape [slices, h, w]
-    """
-    raise NotImplementedError
-    # Create a zoomed version of the volume
-    # zoomed = transforms.RandZoom(1., min_zoom = 0.8, max_zoom=1.2)(volume)
-
-    # # Create anomaly at mask
-    # volume[mask > 0] = zoomed[mask > 0]
-    # volume_viewer(zoomed)
-
-    # return volume, mask
-
-
-def local_rotation_anomaly(volume, mask):
-    """Replace the masked part of the volume with a zoomed version.
-
-    :param np.ndarray volume: Scan to be augmented, shape [slices, h, w]
-    :param np.ndarray mask: Indicates where to add the anomaly, shape [slices, h, w]
-    """
-    raise NotImplementedError
-    # Create a rotated version of the volume
-    # max_rot = 45 * (np.pi / 180)
-    # rotated = transforms.RandRotate(prob=1., range_x=max_rot, range_y=max_rot, range_z=max_rot)(volume)
-
-    # # Create anomaly at mask
-    # volume[mask > 0] = rotated[mask > 0]
-
-    # return volume, mask
-
-
 def sample_location(volume):
     dims = np.array(np.shape(volume))
     core = dims // 2  # width of core region
@@ -383,8 +348,6 @@ def create_random_anomaly(volume, verbose=False):
         "reflection",
         "local_blur",
         "slice_shuffle",
-        # "local_rotation",
-        # "local_zoom"
     ]
     anomaly_type = np.random.choice(anomalies)
     # anomaly_type = "local_zoom"
@@ -430,10 +393,6 @@ def create_random_anomaly(volume, verbose=False):
         res, segmentation = slice_shuffle_anomaly(volume, sphere)
     elif anomaly_type == "reflection":
         res, segmentation = reflection_anomaly(volume, sphere)
-    elif anomaly_type == "local_zoom":
-        res, segmentation = local_zoom_anomaly(volume, sphere)
-    elif anomaly_type == "local_rotation":
-        res, segmentation = local_rotation_anomaly(volume, sphere)
     else:
         raise NotImplementedError(f"No artificial anomaly {anomaly_type}")
 
@@ -455,6 +414,4 @@ if __name__ == "__main__":
     print("Visualizing")
     volume_viewer(segmentation, initial_position=center)
     volume_viewer(anomal_sample, initial_position=center)
-    import IPython
-    IPython.embed()
-    exit(1)
+    import IPython ; IPython.embed() ; exit(1)
