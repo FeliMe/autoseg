@@ -4,7 +4,6 @@ from multiprocessing import Pool
 import os
 from time import time
 
-import matplotlib.pyplot as plt
 import numpy as np
 from skimage import measure
 from sklearn.metrics import (
@@ -20,6 +19,11 @@ from tqdm import tqdm
 
 from uas_mood.utils import data_utils, utils
 
+# matplotlib can't be imported in a read-only filesystem
+try:
+    import matplotlib.pyplot as plt
+except FileNotFoundError:
+    pass
 
 def plot_results(images: list, titles: list, n_images=20):
     """Returns a plot containing the input images, reconstructed images,
@@ -321,9 +325,9 @@ def full_evaluation_sample(predictions, targets, anomalies):
     """
     unique_anomalies = set(anomalies)
     unique_anomalies.discard("normal")
+    unique_anomalies.discard("")
 
     for anomaly in sorted(unique_anomalies):
-
         # Filter only relevant anomalies (and "normal")
         considered = [anomaly, "normal"]
         p = torch.tensor(
@@ -350,24 +354,28 @@ def full_evaluation_pixel(predictions, targets, anomalies):
     unique_anomalies = set(anomalies)
     unique_anomalies.discard("normal")
 
-    for anomaly in sorted(unique_anomalies):
-        print(f"\nEvaluating performance on {anomaly}")
-        t_start = time()
+    if not len(unique_anomalies) == 1:
+        for anomaly in sorted(unique_anomalies):
+            print(f"\nEvaluating performance on {anomaly}")
+            t_start = time()
 
-        # Filter only relevant anomalies
-        p = torch.stack(
-            [m for m, a in zip(predictions, anomalies) if a == anomaly])
-        t = torch.stack([l for l, a in zip(targets, anomalies) if a == anomaly])
+            # Filter only relevant anomalies
+            p = torch.stack(
+                [m for m, a in zip(predictions, anomalies) if a == anomaly])
+            t = torch.stack([l for l, a in zip(targets, anomalies) if a == anomaly])
 
-        # Evaluate sample-wise
-        evaluate_pixel_wise(p, t)
-        print(f"Time: {time() - t_start:.2f}s")
+            # Evaluate sample-wise
+            evaluate_pixel_wise(p, t)
+            print(f"Time: {time() - t_start:.2f}s")
 
     print("\nEvaluating total performance")
     t_start = time()
-    p = torch.stack([m for m, a in zip(predictions, anomalies) if a in unique_anomalies])
-    t = torch.stack([l for l, a in zip(targets, anomalies) if a in unique_anomalies])
-    _, _, _ = evaluate_pixel_wise(p, t)
+    if not len(unique_anomalies) == 1:
+        p = torch.stack([m for m, a in zip(predictions, anomalies) if a in unique_anomalies])
+        t = torch.stack([l for l, a in zip(targets, anomalies) if a in unique_anomalies])
+        evaluate_pixel_wise(p, t)
+    else:
+        print(f"{compute_average_precision(predictions, targets):.4f}")
     print(f"Time: {time() - t_start:.2f}s")
 
 
@@ -386,6 +394,7 @@ def ap_from_files(files):
 def full_evaluation_pixel_memory_efficient(pred_files, target_files, anomalies, n_proc=1):
     unique_anomalies = set(anomalies)
     unique_anomalies.discard("normal")
+    unique_anomalies.discard("")
 
     for anomaly in sorted(unique_anomalies):
         t_start = time()
@@ -410,7 +419,8 @@ def full_evaluation_pixel_memory_efficient(pred_files, target_files, anomalies, 
 
     # Compute average precision on multiple cores
     pool = Pool(n_proc)
-    ap = pool.map(ap_from_files, files)
+    # ap = pool.map(ap_from_files, files)
+    ap = ap_from_files(files)
     print(f"AP: {np.mean(ap):.4f}")
     print(f"Time: {time() - t_start:.2f}s")
 
@@ -419,7 +429,11 @@ def eval_dir(pred_dir, target_dir, mode, n_proc=1):
     # List files from dir
     ext = "*.nii.gz" if mode == "pixel" else "*.txt"
     pred_files = glob(os.path.join(pred_dir, ext))
-    target_files = glob(os.path.join(target_dir, ext))
+    # target_files = glob(os.path.join(target_dir, ext))
+    target_files = [os.path.join(target_dir, p.split('/')[-1]) for p in pred_files]
+    for f in target_files:
+        if not os.path.exists(f):
+            raise FileNotFoundError(f'No such file {f} in target_dir')
     print(
         f"Found {len(pred_files)} predictions and {len(target_files)} targets.")
     assert len(pred_files) == len(target_files)
@@ -431,17 +445,19 @@ def eval_dir(pred_dir, target_dir, mode, n_proc=1):
 
     # Load from files
     if mode == "pixel":
-        # print("Reading nii files with predictions")
-        # preds = np.stack([data_utils.load_nii(f)[0] for f in pred_files])
-        # pred_img_size = preds[0].shape[-2]
-        # print("Reading nii files with targets")
-        # targets = np.stack([data_utils.load_nii(f, size=pred_img_size, dtype="short")[0]
-        #                     for f in target_files])
-        # full_evaluation_pixel(predictions=torch.from_numpy(preds),
-        #                       targets=torch.from_numpy(targets),
-        #                       anomalies=anomalies)
-        full_evaluation_pixel_memory_efficient(pred_files, target_files,
-                                               anomalies, n_proc)
+        if len(set(anomalies)) == 1:
+            print("Reading nii files with predictions")
+            preds = np.stack([data_utils.load_nii(f)[0] for f in pred_files])
+            pred_img_size = preds[0].shape[-2]
+            print("Reading nii files with targets")
+            targets = np.stack([data_utils.load_nii(f, size=pred_img_size, dtype="short")[0]
+                                for f in target_files])
+            full_evaluation_pixel(predictions=torch.from_numpy(preds),
+                                targets=torch.from_numpy(targets),
+                                anomalies=anomalies)
+        else:
+            full_evaluation_pixel_memory_efficient(pred_files, target_files,
+                                                   anomalies, n_proc)
     elif mode == "sample":
         preds = [float(utils.read_file(f)) for f in pred_files]
         targets = [int(utils.read_file(f)) for f in target_files]

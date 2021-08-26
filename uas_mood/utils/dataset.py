@@ -5,13 +5,18 @@ from multiprocessing import Pool
 import os
 import random
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 from uas_mood.utils.artificial_anomalies import sample_complete_mask, patch_exchange
 from uas_mood.utils.data_utils import load_segmentation, process_scan
+
+# matplotlib can't be imported in a read-only filesystem
+try:
+    import matplotlib.pyplot as plt
+except FileNotFoundError:
+    pass
 
 
 DATAROOT = os.environ.get("DATAROOT")
@@ -138,11 +143,11 @@ class PatchSwapDataset(PreloadDataset):
         self.samples = []
         for sample in samples:
             axial = sample
-            coronal = np.rollaxis(sample, 1)
-            saggital = np.rollaxis(sample, 2)
+            coronal = np.moveaxis(sample, 1, 0)
+            sagittal = np.moveaxis(sample, 2, 0)
             self.samples += [sl for sl in axial]
             self.samples += [sl for sl in coronal]
-            self.samples += [sl for sl in saggital]
+            self.samples += [sl for sl in sagittal]
             if self.n_slices == -1:
                 self.n_slices = len(self.samples)
         # self.samples = [sl for sample in samples for sl in sample]

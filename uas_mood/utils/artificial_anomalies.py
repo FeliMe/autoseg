@@ -1,13 +1,18 @@
 import random
 
 from PIL import Image, ImageDraw
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy import interpolate
 from scipy.ndimage import filters
 from skimage.draw import ellipse
 
 from uas_mood.utils.data_utils import process_scan
+
+# matplotlib can't be imported in a read-only filesystem
+try:
+    import matplotlib.pyplot as plt
+except FileNotFoundError:
+    pass
 
 
 def plot(images):

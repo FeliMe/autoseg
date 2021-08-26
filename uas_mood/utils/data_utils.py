@@ -1,10 +1,15 @@
-import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 from skimage.exposure import equalize_hist
 from skimage.transform import resize
 import torch
 import torch.nn.functional as F
+
+# matplotlib can't be imported in a read-only filesystem
+try:
+    import matplotlib.pyplot as plt
+except FileNotFoundError:
+    pass
 
 
 def volume_viewer(volume, initial_position=None, slices_first=False):
@@ -61,12 +66,11 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
         fig.canvas.draw()
 
     def prepare_volume(volume, slices_first):
-        # Convert to torch
-        if isinstance(volume, np.ndarray):
-            try:
-                volume = torch.from_numpy(volume)
-            except ValueError:
-                volume = torch.from_numpy(volume.copy())
+        # Convert to numpy
+        if isinstance(volume, torch.Tensor):
+            volume = volume.numpy()
+        # if isinstance(volume, np.ndarray):
+        #     volume = torch.from_numpy(volume.copy())
 
         # Omit batch dimension
         if volume.ndim == 4:
@@ -74,16 +78,22 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
 
         # If first dimension is slices, put it last
         if slices_first:
-            volume = volume.permute(1, 2, 0)
+            volume = np.transpose(volume , (1, 2, 0))
+            # volume = volume.permute(1, 2, 0)
 
         # Pad slices
         if volume.shape[0] < volume.shape[1]:
-            pad = (volume.shape[1] - volume.shape[0]) // 2
-            volume = F.pad(volume, [0, 0, 0, 0, pad, pad])
+            pad_size = (volume.shape[1] - volume.shape[0]) // 2
+            pad = [(0, 0)] * volume.ndim
+            pad[0] = (pad_size, pad_size)
+            volume = np.pad(volume, pad)
+            # volume = F.pad(volume, [0, 0, 0, 0, pad, pad])
 
         # Transform such that axial view is first
-        volume = torch.flip(volume, [2, 1, 0])
-        volume = volume.permute(2, 1, 0)
+        # volume = torch.flip(volume, [2, 1, 0])
+        # volume = volume.permute(2, 1, 0)
+        volume = np.flip(volume, (2, 1, 0))
+        volume = np.transpose(volume, (2, 1, 0))
 
         return volume
 
@@ -112,9 +122,13 @@ def volume_viewer(volume, initial_position=None, slices_first=False):
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
     plot_ax(ax[0], volume, initial_position[2],
             "axial")  # axial [slices, h, w]
-    plot_ax(ax[1], volume.permute(1, 0, 2), initial_position[1],
+    # plot_ax(ax[1], volume.permute(1, 0, 2), initial_position[1],
+    #         "coronal")  # saggital [h, slices, w]
+    # plot_ax(ax[2], volume.permute(2, 0, 1), initial_position[0],
+    #         "sagittal")  # coronal [w, slices, h]
+    plot_ax(ax[1], np.transpose(volume, (1, 0, 2)), initial_position[1],
             "coronal")  # saggital [h, slices, w]
-    plot_ax(ax[2], volume.permute(2, 0, 1), initial_position[0],
+    plot_ax(ax[2], np.transpose(volume, (2, 0, 1)), initial_position[0],
             "sagittal")  # coronal [w, slices, h]
     fig.canvas.mpl_connect('key_press_event', process_key)
     print("Plotting volume, navigate:"

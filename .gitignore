@@ -9,12 +9,16 @@ __pycache__/
 # Single directories
 /uas_mood.egg-info/
 /uas_mood/logs/
+/uas_mood/out_dir/
 
 # Recursive directories
 .ipynb_checkpoints/
 __pycache__/
 .pytest_cache/
 .vscode/
+
+# All files in model_ckpts
+/uas_mood/model_ckpts/**
 
 # Tester file
 /uas_mood/tester.py

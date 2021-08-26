@@ -5,8 +5,6 @@ import random
 from time import time
 from warnings import warn
 
-import matplotlib
-import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -16,7 +14,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from uas_mood.models import models
+from uas_mood.models import models, unet
 from uas_mood.utils import evaluation, utils
 from uas_mood.utils.data_utils import save_nii, volume_viewer
 from uas_mood.utils.dataset import (
@@ -27,6 +25,13 @@ from uas_mood.utils.dataset import (
     get_train_files,
 )
 from uas_mood.utils.hparam_search import hparam_search
+
+# matplotlib can't be imported in a read-only filesystem
+try:
+    import matplotlib
+    import matplotlib.pyplot as plt
+except FileNotFoundError:
+    pass
 
 
 class LitProgressBar(pl.callbacks.progress.ProgressBar):
@@ -70,15 +75,17 @@ class LitModel(pl.LightningModule):
 
         # Network
         if self.args.model == "unet":
-            print("Using UNet")
-            self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
-                                      'unet', in_channels=self.args.slices_on_forward,
-                                      out_channels=1,
-                                      init_features=32, pretrained=False,
-                                      verbose=False)
+            self.print_("Using UNet")
+            self.net = unet.UNet(in_channels=self.args.slices_on_forward,
+                                 out_channels=1, init_features=32)
+            # self.net = torch.hub.load('mateuszbuda/brain-segmentation-pytorch',
+            #                           'unet', in_channels=self.args.slices_on_forward,
+            #                           out_channels=1,
+            #                           init_features=32, pretrained=False,
+            #                           verbose=False)
             self.net.apply(models.weights_init_relu)
         else:
-            print("Using Wide ResNet")
+            self.print_("Using Wide ResNet")
             self.net = models.WideResNetAE(inp_size=args.img_size,
                                            widen_factor=args.model_width)
 
@@ -98,11 +105,19 @@ class LitModel(pl.LightningModule):
         return self.net(x)
 
     def configure_optimizers(self):
-        opt = torch.optim.AdamW(
+        optimizer = torch.optim.AdamW(
             self.parameters(), lr=self.args.lr, weight_decay=0.5 * 0.0005)
-        # scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9995)
-        # return [opt], [scheduler]
-        return [opt]
+        return [optimizer]
+        # return {
+        #     'optimizer': optimizer,
+        #     'lr_scheduler': {
+        #         'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #             optimizer, patience=2, factor=0.1),
+        #         'monitor': 'loss',
+        #         'interval': 'step',
+        #         'frequency': 100,
+        #     }
+        # }
 
     def print_(self, msg):
         if self.args.verbose:
@@ -157,6 +172,8 @@ class LitModel(pl.LightningModule):
 
         # Compute loss
         loss = self.loss_fn(pred, y)
+
+        self.log("loss", loss.cpu(), on_step=True)
 
         return {"loss": loss.cpu()}
 
@@ -552,8 +569,8 @@ if __name__ == '__main__':
         test_files = test_files[:args.max_test_files]
 
     if args.debug:
-        train_files = train_files[:50]
-        test_files = test_files[:10]
+        train_files = train_files[:40]
+        # test_files = test_files[:10]
 
     callbacks = [LitProgressBar()]
 
