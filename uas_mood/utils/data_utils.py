@@ -18,7 +18,7 @@ def plot(image):
     plt.show()
 
 
-def volume_viewer(volume, initial_position=None, slices_first=False):
+def volume_viewer(volume, initial_position=None, slices_first=True):
     """Plot a volume of shape [x, y, slices]
     Useful for MR and CT image volumes
 
@@ -163,7 +163,7 @@ def load_nii(path: str, size: int = None, primary_axis: int = 0,
         volume = volume.squeeze(-1)
 
     # Resize if size is given and if necessary
-    if size is not None and np.any(np.array(volume.shape) != size):
+    if size is not None and (volume.shape[0] != size or volume.shape[1] != size):
         volume = resize(volume, [size, size, size])
 
     # Convert

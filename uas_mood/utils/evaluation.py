@@ -5,17 +5,12 @@ import os
 from time import time
 
 import numpy as np
-from skimage import measure
 from sklearn.metrics import (
-    auc,
     average_precision_score,
-    precision_recall_curve,
     roc_auc_score,
 )
 import torch
 from torchvision.utils import make_grid
-from tqdm import tqdm
-from tqdm import tqdm
 
 from uas_mood.utils import data_utils, utils
 
@@ -32,7 +27,6 @@ def plot_results(images: list, titles: list, n_images=20):
     if len(images) != len(titles):
         raise RuntimeError("not the same number of images and titles")
 
-    import IPython ; IPython.embed()
     # Stack tensors to image grid and transform to numpy for plotting
     img_dict = {}
     for img, title in zip(images, titles):

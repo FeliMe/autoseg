@@ -1,5 +1,4 @@
 from abc import abstractclassmethod
-import argparse
 from glob import glob
 from multiprocessing import Pool
 import os
@@ -9,8 +8,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from uas_mood.utils.artificial_anomalies import sample_complete_mask, patch_exchange
-from uas_mood.utils.data_utils import load_segmentation, process_scan
+from uas_mood.utils.artificial_anomalies import patch_exchange, sample_complete_mask
+from uas_mood.utils.artificial_anomalies_3d import patch_exchange_3d, sample_polygon_3d
+from uas_mood.utils.data_utils import load_segmentation, process_scan, volume_viewer
 
 # matplotlib can't be imported in a read-only filesystem
 try:
@@ -24,7 +24,7 @@ assert DATAROOT is not None
 MOODROOT = os.path.join(DATAROOT, "MOOD")
 
 
-def plot(images):
+def plot(images, f=None):
     if not isinstance(images, list):
         images = [images]
     n = len(images)
@@ -33,7 +33,11 @@ def plot(images):
     for i, im in enumerate(images):
         fig.add_subplot(1, n, i + 1)
         plt.imshow(im, cmap="gray", vmin=0., vmax=1.)
-    plt.show()
+
+    if f is None:
+        plt.show()
+    else:
+        plt.savefig(f)
 
 
 class PreloadDataset(Dataset):
@@ -201,6 +205,79 @@ class PatchSwapDataset(PreloadDataset):
         return sample, patch
 
 
+class PatchSwapDataset3D(PreloadDataset):
+    def __init__(self, files, vol_size, data, load_to_ram):
+        super().__init__()
+        assert data in ["brain", "abdom"]
+
+        if load_to_ram:
+            # List of patient volumes [slices, w, h]
+            self.samples = self.load_to_ram(files, vol_size)
+        else:
+            self.samples = files
+
+        self.load_to_ram = load_to_ram
+        self.vol_size = vol_size
+        self.data = data
+
+    def __len__(self):
+        return len(self.samples)
+
+    @staticmethod
+    def load_batch(files, vol_size):
+        samples = []
+        for f in files:
+            # Samples are shape [width, height, slices]
+            samples.append(process_scan(f, vol_size, equalize_hist=False))
+            if np.any(np.isnan(samples[-1])):
+                print(f)
+
+        return samples
+
+    def create_anomaly(self, vol1, vol2):
+        """Create a sample where one patch is switched from another sample
+        with a random interpolation factor
+
+        Args:
+            img1 (torch.Tensor): shape [w, h]
+            img2 (torch.Tensor): shape [w, h]
+        """
+        size_range = [.1, .5] if self.data == "brain" else [.2, .6]
+
+        # Sample an anomaly mask
+        mask = sample_polygon_3d(vol1, size_range=size_range, data=self.data,
+                                 n_vertices=30)
+
+        # Swap patches between img1 and img2 at mask
+        patchex, label = patch_exchange_3d(vol1, vol2, mask)
+
+        # Convert to tensor
+        patchex = torch.from_numpy(patchex)
+        label = torch.from_numpy(label)
+
+        return patchex, label
+
+    def __getitem__(self, idx):
+        # Select sample
+        sample = self.samples[idx]
+        if not self.load_to_ram:
+            sample = process_scan(sample, self.vol_size, equalize_hist=False)
+        else:
+            sample = sample.copy()
+
+        # Randomly select another sample
+        other_idx = random.randint(0, len(self) - 1)
+        other_sample = self.samples[other_idx]
+        if not self.load_to_ram:
+            other_sample = process_scan(other_sample, self.vol_size,
+                                        equalize_hist=False)
+
+        # Create foreign patch interpolation
+        sample, patch = self.create_anomaly(sample, other_sample)
+
+        return sample, patch
+
+
 def get_train_files(root: str, body_region: str):
     """Return all training files
 
@@ -225,9 +302,8 @@ def get_test_files(root: str, body_region: str):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    # data = "brain"
-    data = "abdom"
+    data = "brain"
+    # data = "abdom"
     img_size = 256 if data == "brain" else 512
     train_files = get_train_files(MOODROOT, data)
     test_files = get_test_files(MOODROOT, data)
@@ -242,11 +318,18 @@ if __name__ == '__main__':
     # plot([x[1][idx], y[1][idx]])
 
     # ----- PatchSwapDataset -----
-    ds = PatchSwapDataset(train_files[:10], img_size,
-                          data=data, slices_on_forward=1)
-    idx = 256 + 0
-    x, y = ds.__getitem__(idx)
-    print(x.shape)
-    print(y.shape, y.min(), y.max())
-    print(x.dtype, y.dtype)
-    plot([x[0], (x[0] + y[0]).clip(0, 1), y[0]])
+    # ds = PatchSwapDataset(train_files[:10], img_size,
+    #                       data=data, slices_on_forward=3)
+    # x, y = ds.__getitem__(128)
+    # print(x.shape, y.shape)
+    # print(x.dtype, y.dtype)
+    # plot([x[0], (x[0] + y[0]).clip(0, 1), y[0]])
+
+    # ----- PatchSwapDataset3D -----
+    ds = PatchSwapDataset3D(train_files[:10], img_size, data, load_to_ram=False)
+    x, y = next(iter(ds))
+    print(x.shape, y.shape, x.dtype, y.dtype, y.sum())
+    volume_viewer(y)
+    volume_viewer(x)
+
+    import IPython ; IPython.embed() ; exit(1)

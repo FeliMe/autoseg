@@ -9,6 +9,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from ray import tune
+import segmentation_models_pytorch as smp
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -77,6 +78,13 @@ class LitModel(pl.LightningModule):
             self.print_("Using UNet")
             self.net = models.UNet(in_channels=self.args.slices_on_forward,
                                  out_channels=1, init_features=32)
+            # self.net = smp.FPN(
+            #     encoder_weights=None,
+            #     encoder_depth=4,
+            #     upsampling=2,
+            #     in_channels=self.args.slices_on_forward,
+            #     classes=1,
+            # )
             self.net.apply(models.weights_init_relu)
         else:
             self.print_("Using Wide ResNet")
@@ -96,7 +104,9 @@ class LitModel(pl.LightningModule):
             self.logger.log_hyperparams(self.args)
 
     def forward(self, x):
-        return self.net(x)
+        y = self.net(x)
+        # y = torch.sigmoid(y)  # TODO: Remove
+        return y
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
@@ -507,7 +517,8 @@ if __name__ == '__main__':
     parser.add_argument("--precision", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
     # Logging params
-    parser.add_argument("--log_dir", type=str, default="logs/")
+    parser.add_argument("--log_dir", type=str,
+                        default=f"{os.path.dirname(os.path.abspath(__file__))}/logs/")
     parser.add_argument("--num_images_log", type=int, default=4)
     # Ray tune params
     parser.add_argument("--hparam_search", action="store_true")
@@ -528,6 +539,8 @@ if __name__ == '__main__':
 
     # Handle ~ in data_paths
     args.log_dir = os.path.expanduser(args.log_dir)
+
+    print(args.log_dir)
 
     # Check if GPU is available
     if not torch.cuda.is_available():
@@ -565,9 +578,6 @@ if __name__ == '__main__':
     if args.debug:
         train_files = train_files[:40]
         # test_files = test_files[:10]
-
-    # TODO: Remove
-    test_files = test_files[:5]
 
     callbacks = [LitProgressBar()]
 
