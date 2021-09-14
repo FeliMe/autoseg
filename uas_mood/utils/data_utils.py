@@ -1,14 +1,9 @@
+import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 from skimage.exposure import equalize_hist
 from skimage.transform import resize
 import torch
-
-# matplotlib can't be imported in a read-only filesystem
-try:
-    import matplotlib.pyplot as plt
-except FileNotFoundError:
-    pass
 
 
 def plot(image):

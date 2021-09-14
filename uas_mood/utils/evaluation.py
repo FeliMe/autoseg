@@ -4,21 +4,13 @@ from multiprocessing import Pool
 import os
 from time import time
 
+import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import (
-    average_precision_score,
-    roc_auc_score,
-)
+from sklearn.metrics import average_precision_score, roc_auc_score
 import torch
 from torchvision.utils import make_grid
 
 from uas_mood.utils import data_utils, utils
-
-# matplotlib can't be imported in a read-only filesystem
-try:
-    import matplotlib.pyplot as plt
-except FileNotFoundError:
-    pass
 
 def plot_results(images: list, titles: list, n_images=20):
     """Returns a plot containing the input images, reconstructed images,

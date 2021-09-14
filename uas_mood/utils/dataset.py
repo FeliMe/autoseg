@@ -3,20 +3,15 @@ from glob import glob
 from multiprocessing import Pool
 import os
 import random
+from time import time
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 from uas_mood.utils.artificial_anomalies import patch_exchange, sample_complete_mask
-from uas_mood.utils.artificial_anomalies_3d import patch_exchange_3d, sample_polygon_3d
 from uas_mood.utils.data_utils import load_segmentation, process_scan, volume_viewer
-
-# matplotlib can't be imported in a read-only filesystem
-try:
-    import matplotlib.pyplot as plt
-except FileNotFoundError:
-    pass
 
 
 DATAROOT = os.environ.get("DATAROOT")
@@ -49,7 +44,7 @@ class PreloadDataset(Dataset):
     def load_batch():
         pass
 
-    def load_to_ram(self, paths, img_size):
+    def load_files_to_ram(self, paths, img_size):
         # Set number of cpus used
         num_cpus = os.cpu_count() - 4
 
@@ -70,7 +65,7 @@ class PreloadDataset(Dataset):
 class TestDataset(PreloadDataset):
     def __init__(self, files, img_size):
         super().__init__()
-        res = self.load_to_ram(files, img_size)
+        res = self.load_files_to_ram(files, img_size)
         samples = [s for t in res for s in t["samples"]]
         segmentations = [s for t in res for s in t["segmentations"]]
 
@@ -108,7 +103,7 @@ class PatchSwapDataset(PreloadDataset):
         assert data in ["brain", "abdom"]
         assert slices_on_forward in [1, 3], "PatchSwapDataset only works with slices_on_forward 1 or 3"
 
-        res = self.load_to_ram(files, img_size)
+        res = self.load_files_to_ram(files, img_size)
         samples = [s for r in res for s in r]
         # Samples: list of patient volumes [slices, w, h]
 
@@ -133,7 +128,6 @@ class PatchSwapDataset(PreloadDataset):
             self.samples += [sl for sl in sagittal]
             if self.n_slices == -1:
                 self.n_slices = len(self.samples)
-        # self.samples = [sl for sample in samples for sl in sample]
         self.data = data
 
     def __len__(self):
@@ -205,79 +199,6 @@ class PatchSwapDataset(PreloadDataset):
         return sample, patch
 
 
-class PatchSwapDataset3D(PreloadDataset):
-    def __init__(self, files, vol_size, data, load_to_ram):
-        super().__init__()
-        assert data in ["brain", "abdom"]
-
-        if load_to_ram:
-            # List of patient volumes [slices, w, h]
-            self.samples = self.load_to_ram(files, vol_size)
-        else:
-            self.samples = files
-
-        self.load_to_ram = load_to_ram
-        self.vol_size = vol_size
-        self.data = data
-
-    def __len__(self):
-        return len(self.samples)
-
-    @staticmethod
-    def load_batch(files, vol_size):
-        samples = []
-        for f in files:
-            # Samples are shape [width, height, slices]
-            samples.append(process_scan(f, vol_size, equalize_hist=False))
-            if np.any(np.isnan(samples[-1])):
-                print(f)
-
-        return samples
-
-    def create_anomaly(self, vol1, vol2):
-        """Create a sample where one patch is switched from another sample
-        with a random interpolation factor
-
-        Args:
-            img1 (torch.Tensor): shape [w, h]
-            img2 (torch.Tensor): shape [w, h]
-        """
-        size_range = [.1, .5] if self.data == "brain" else [.2, .6]
-
-        # Sample an anomaly mask
-        mask = sample_polygon_3d(vol1, size_range=size_range, data=self.data,
-                                 n_vertices=30)
-
-        # Swap patches between img1 and img2 at mask
-        patchex, label = patch_exchange_3d(vol1, vol2, mask)
-
-        # Convert to tensor
-        patchex = torch.from_numpy(patchex)
-        label = torch.from_numpy(label)
-
-        return patchex, label
-
-    def __getitem__(self, idx):
-        # Select sample
-        sample = self.samples[idx]
-        if not self.load_to_ram:
-            sample = process_scan(sample, self.vol_size, equalize_hist=False)
-        else:
-            sample = sample.copy()
-
-        # Randomly select another sample
-        other_idx = random.randint(0, len(self) - 1)
-        other_sample = self.samples[other_idx]
-        if not self.load_to_ram:
-            other_sample = process_scan(other_sample, self.vol_size,
-                                        equalize_hist=False)
-
-        # Create foreign patch interpolation
-        sample, patch = self.create_anomaly(sample, other_sample)
-
-        return sample, patch
-
-
 def get_train_files(root: str, body_region: str):
     """Return all training files
 
@@ -321,15 +242,21 @@ if __name__ == '__main__':
     # ds = PatchSwapDataset(train_files[:10], img_size,
     #                       data=data, slices_on_forward=3)
     # x, y = ds.__getitem__(128)
-    # print(x.shape, y.shape)
+    # print(x.shape, y.shape, y.max())
     # print(x.dtype, y.dtype)
-    # plot([x[0], (x[0] + y[0]).clip(0, 1), y[0]])
+    # x = x[1].unsqueeze(0)
+    # plot([x[0], (x[0] + y[0]).clip(0, 1), y[0]], f="fig.png")
 
     # ----- PatchSwapDataset3D -----
-    ds = PatchSwapDataset3D(train_files[:10], img_size, data, load_to_ram=False)
+    ds = PatchSwapDataset3D(train_files[:10], data, load_to_ram=False,
+                            return_crops=True, batch_size=32, crop_size=64)
+    t = time()
     x, y = next(iter(ds))
+    print(f"{time() - t:.4f}s")
     print(x.shape, y.shape, x.dtype, y.dtype, y.sum())
-    volume_viewer(y)
-    volume_viewer(x)
+    print(f"Fraction with anomalies: {(y.sum((2,3,4)) > 0).sum() / y.shape[0]:.4f}")
+    idx = torch.nonzero(y.sum(dim=(2, 3, 4)))[0, 0] if y.sum() > 0 else 0
+    volume_viewer(y[idx, 0])
+    volume_viewer(x[idx, 0])
 
     import IPython ; IPython.embed() ; exit(1)

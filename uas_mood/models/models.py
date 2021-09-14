@@ -1,7 +1,6 @@
 from collections import OrderedDict
 from math import log
 
-from acsconv.operators import ACSConv
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -340,48 +339,47 @@ class UNet(nn.Module):
 """"""""""""""""""""""""""""""""" ACSUNet """""""""""""""""""""""""""""""""
 
 class ACSUNet(nn.Module):
-    """From https://github.com/mateuszbuda/brain-segmentation-pytorch/blob/master/unet.py"""
+    # conv = ACSConv
+    conv = nn.Conv3d
     def __init__(self, in_channels=3, out_channels=1, init_features=16):
         super(ACSUNet, self).__init__()
 
         features = init_features
+
+        # Encoder
         self.encoder1 = ACSUNet._block(in_channels, features, name="enc1")
         self.pool1 = nn.MaxPool3d(kernel_size=2, stride=2)
         self.encoder2 = ACSUNet._block(features, features * 2, name="enc2")
         self.pool2 = nn.MaxPool3d(kernel_size=2, stride=2)
-        self.encoder3 = ACSUNet._block(features * 2, features * 4, name="enc3")
-        self.pool3 = nn.MaxPool3d(kernel_size=2, stride=2)
 
-        self.bottleneck = ACSUNet._block(features * 4, features * 4, name="bottleneck")
+        # Bottleneck
+        self.bottleneck = ACSUNet._block(features * 2, features * 2, name="bottleneck")
 
-        self.up3 = nn.Upsample(scale_factor=2, mode="nearest")
-        self.decoder3 = ACSUNet._block((features * 4) * 2, features * 2, name="dec3")
+        # Decoder
         self.up2 = nn.Upsample(scale_factor=2, mode="nearest")
         self.decoder2 = ACSUNet._block((features * 2) * 2, features * 1, name="dec2")
         self.up1 = nn.Upsample(scale_factor=2, mode="nearest")
         self.decoder1 = ACSUNet._block(features * 2, features, name="dec1")
 
-        self.conv = nn.Conv3d(
+        self.final_conv = ACSUNet.conv(
             in_channels=features, out_channels=out_channels, kernel_size=1
         )
 
     def forward(self, x):
+        # Encode
         enc1 = self.encoder1(x)
         enc2 = self.encoder2(self.pool1(enc1))
-        enc3 = self.encoder3(self.pool2(enc2))
+        bottleneck = self.bottleneck(self.pool2(enc2))
 
-        bottleneck = self.bottleneck(self.pool3(enc3))
-
-        dec3 = self.up3(bottleneck)
-        dec3 = torch.cat((dec3, enc3), dim=1)
-        dec3 = self.decoder3(dec3)
-        dec2 = self.up2(dec3)
+        # Decode
+        dec2 = self.up2(bottleneck)
         dec2 = torch.cat((dec2, enc2), dim=1)
         dec2 = self.decoder2(dec2)
         dec1 = self.up1(dec2)
         dec1 = torch.cat((dec1, enc1), dim=1)
         dec1 = self.decoder1(dec1)
-        return torch.sigmoid(self.conv(dec1))
+
+        return torch.sigmoid(self.final_conv(dec1))
 
     @staticmethod
     def _block(in_channels, features, name):
@@ -390,7 +388,7 @@ class ACSUNet(nn.Module):
                 [
                     (
                         name + "conv1",
-                        nn.Conv3d(
+                        ACSUNet.conv(
                             in_channels=in_channels,
                             out_channels=features,
                             kernel_size=3,
@@ -402,7 +400,7 @@ class ACSUNet(nn.Module):
                     (name + "relu1", nn.ReLU(inplace=True)),
                     (
                         name + "conv2",
-                        nn.Conv3d(
+                        ACSUNet.conv(
                             in_channels=features,
                             out_channels=features,
                             kernel_size=3,
@@ -419,14 +417,14 @@ class ACSUNet(nn.Module):
 
 if __name__ == '__main__':
     device = "cuda"
-    size = 256
-    model = UNet(in_channels=1, out_channels=1, init_features=32).to(device)
-    x = torch.randn(2, 1, size, size).to(device)
-    print(summary(model, input_size=x.shape[1:], batch_size=2, device=device))
-    import IPython ; IPython.embed() ; exit(1)
+    # size = 256
+    # model = UNet(in_channels=1, out_channels=1, init_features=32).to(device)
+    # x = torch.randn(2, 1, size, size).to(device)
     # y = model(x)
+    size = 64
+    batch_size = 32
     model = ACSUNet(in_channels=1, out_channels=1, init_features=16).to(device)
-    x = torch.randn(2, 1, size, size, size).to(device)
+    x = torch.randn(batch_size, 1, size, size, size).to(device)
     print(summary(model, input_size=x.shape[1:], batch_size=2, device=device))
     y = model(x)
     print(y.shape, y.min(), y.max())

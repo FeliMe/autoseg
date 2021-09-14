@@ -1,18 +1,13 @@
 import random
 
 from PIL import Image, ImageDraw
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy import interpolate
 from scipy.ndimage import filters
 from skimage.draw import ellipse
 
 from uas_mood.utils.data_utils import process_scan
-
-# matplotlib can't be imported in a read-only filesystem
-try:
-    import matplotlib.pyplot as plt
-except FileNotFoundError:
-    pass
 
 
 def plot(images):
@@ -105,8 +100,7 @@ def create_polygon(center, size, img_size, n_vertices, order):
     :param tuple(int, int) center: center coordinates (x, y)
     :param tuple(int, int) scale: scaling factors (x, y)
     :param int order: Select 1 for streight lines, 3 for cubic splines
-    :param int blur_factor: Select 1 for streight lines, 3 for cubic splines
-    :param np.ndarray poly_mask: Mask of img_size with the polygon inside
+    :returns np.ndarray poly_mask: Mask of img_size with the polygon inside
     """
     # Sample random radius
     r = np.random.uniform(0.1, 0.5, n_vertices)
@@ -187,7 +181,6 @@ def sample_patch(img, size_range, data, patch_type, poly_type, n_vertices):
     else:
         raise NotImplementedError
 
-    # TODO: n channel mod
     ch = img.shape[0]
     mask = np.repeat(mask[None], ch, axis=0)
 

@@ -5,11 +5,12 @@ import random
 from time import time
 from warnings import warn
 
+import matplotlib
+import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from ray import tune
-import segmentation_models_pytorch as smp
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -25,13 +26,6 @@ from uas_mood.utils.dataset import (
     get_train_files,
 )
 from uas_mood.utils.hparam_search import hparam_search
-
-# matplotlib can't be imported in a read-only filesystem
-try:
-    import matplotlib
-    import matplotlib.pyplot as plt
-except FileNotFoundError:
-    pass
 
 
 class LitProgressBar(pl.callbacks.progress.ProgressBar):
@@ -78,13 +72,6 @@ class LitModel(pl.LightningModule):
             self.print_("Using UNet")
             self.net = models.UNet(in_channels=self.args.slices_on_forward,
                                  out_channels=1, init_features=32)
-            # self.net = smp.FPN(
-            #     encoder_weights=None,
-            #     encoder_depth=4,
-            #     upsampling=2,
-            #     in_channels=self.args.slices_on_forward,
-            #     classes=1,
-            # )
             self.net.apply(models.weights_init_relu)
         else:
             self.print_("Using Wide ResNet")
@@ -105,7 +92,6 @@ class LitModel(pl.LightningModule):
 
     def forward(self, x):
         y = self.net(x)
-        # y = torch.sigmoid(y)  # TODO: Remove
         return y
 
     def configure_optimizers(self):

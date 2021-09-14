@@ -10,6 +10,10 @@ RUN apt install --assume-yes vim
 # Set DATAROOT
 ENV DATAROOT=/
 
+# Set tmpdir and mplconfigdir for matplotlib to /mnt/pred/
+ENV TMPDIR=/mnt/pred/
+ENV MPLCONFIGDIR=/mnt/pred/
+
 # Copy files
 ADD . /workspace/
 
