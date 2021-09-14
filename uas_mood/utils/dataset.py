@@ -11,6 +11,12 @@ import torch
 from torch.utils.data import Dataset
 
 from uas_mood.utils.artificial_anomalies import patch_exchange, sample_complete_mask
+from uas_mood.utils.artificial_anomalies_3d import (
+    patch_exchange_3d,
+    random_crop_3D,
+    random_crop_centers_3D,
+    sample_polygon_3d,
+)
 from uas_mood.utils.data_utils import load_segmentation, process_scan, volume_viewer
 
 
@@ -95,6 +101,42 @@ class TestDataset(PreloadDataset):
 
     def __getitem__(self, idx):
         return self.samples[idx], self.segmentations[idx]
+
+
+class TestDataset3D(PreloadDataset):
+    def __init__(self, files, return_crops: bool=False, crop_size: int=None):
+        super().__init__()
+
+        self.samples = files
+        self.return_crops = return_crops
+        self.crop_size = crop_size
+
+    def __len__(self):
+        return len(self.samples)
+
+    @staticmethod
+    def load_batch(files, img_size):
+        samples = []
+        segmentations = []
+        for f in files:
+            # Samples are shape [width, height, slices]
+            samples.append((f, process_scan(f, img_size, equalize_hist=False)))
+            # Load segmentation, is in folder test_label/pixel instead of test
+            f_seg = f.replace("test", "test_label/pixel")
+            segmentations.append(
+                (f_seg, load_segmentation(f_seg, img_size)))
+
+        return {
+            "samples": samples,
+            "segmentations": segmentations
+        }
+
+    def __getitem__(self, idx):
+        f = self.samples[idx]
+        sample = process_scan(f, equalize_hist=False)
+        f_seg = f.replace("test", "test_label/pixel")
+        segmentation = process_scan(f_seg, equalize_hist=False)
+        return sample, segmentation
 
 
 class PatchSwapDataset(PreloadDataset):
@@ -195,6 +237,100 @@ class PatchSwapDataset(PreloadDataset):
 
         # Create foreign patch interpolation
         sample, patch = self.create_anomaly(sample, other_sample)
+
+        return sample, patch
+
+
+class PatchSwapDataset3D(PreloadDataset):
+    def __init__(self, files, data, load_to_ram: bool=False,
+                 return_crops: bool=False, batch_size: int=None,
+                 crop_size: int=None):
+        super().__init__()
+        assert data in ["brain", "abdom"]
+        if return_crops and (batch_size is None or crop_size is None):
+            raise RuntimeError("If return_crops, batch_size and crop_size must be provided")
+
+        if load_to_ram:
+            # List of patient volumes [slices, w, h]
+            self.samples = self.load_files_to_ram(files, img_size=None)
+        else:
+            self.samples = files
+
+        self.load_to_ram = load_to_ram
+        self.data = data
+        self.return_crops = return_crops
+        self.batch_size = batch_size
+        self.crop_size = crop_size
+
+    def __len__(self):
+        return len(self.samples)
+
+    @staticmethod
+    def load_batch(files):
+        samples = []
+        for f in files:
+            # Samples are shape [width, height, slices]
+            samples.append(process_scan(f, equalize_hist=False))
+            if np.any(np.isnan(samples[-1])):
+                print(f)
+
+        return samples
+
+    def create_anomaly(self, vol1, vol2):
+        """Create a sample where one patch is switched from another sample
+        with a random interpolation factor
+
+        Args:
+            img1 (torch.Tensor): shape [w, h]
+            img2 (torch.Tensor): shape [w, h]
+        """
+        size_range = [.1, .6] if self.data == "brain" else [.2, .6]
+
+        # Sample an anomaly mask
+        mask = sample_polygon_3d(vol1, size_range=size_range, data=self.data,
+                                 n_vertices=30)
+
+        # Swap patches between img1 and img2 at mask
+        patchex, label = patch_exchange_3d(vol1, vol2, mask)
+
+        # Convert to tensor
+        patchex = torch.from_numpy(patchex)
+        label = torch.from_numpy(label)
+
+        return patchex, label
+
+    def __getitem__(self, idx):
+        # Select sample
+        sample = self.samples[idx]
+        if not self.load_to_ram:
+            sample = process_scan(sample, equalize_hist=False)
+        else:
+            sample = sample.copy()
+
+        # Randomly select another sample
+        other_idx = random.randint(0, len(self) - 1)
+        other_sample = self.samples[other_idx]
+        if not self.load_to_ram:
+            other_sample = process_scan(other_sample,
+                                        equalize_hist=False)
+
+        # Create foreign patch interpolation
+        sample, patch = self.create_anomaly(sample, other_sample)
+
+        if self.return_crops:
+            # TODO: Maybe sample for patch first so that all samples contain anomalies
+            centers = random_crop_centers_3D(sample, data=self.data,
+                                             n_crops=self.batch_size)
+            sample = random_crop_3D(sample, size=self.crop_size, centers=centers)
+            patch = random_crop_3D(patch, size=self.crop_size, centers=centers)
+
+            # Expand second dim
+            sample = sample[:, None]
+            patch = patch[:, None]
+        else:
+            # Expand first dim
+            sample = sample[None]
+            patch = patch[None]
 
         return sample, patch
 

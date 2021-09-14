@@ -336,6 +336,85 @@ class UNet(nn.Module):
         )
 
 
+""""""""""""""""""""""""""""""""" ACSUNet """""""""""""""""""""""""""""""""
+
+class ACSUNet(nn.Module):
+    # conv = ACSConv
+    conv = nn.Conv3d
+    def __init__(self, in_channels=3, out_channels=1, init_features=16):
+        super(ACSUNet, self).__init__()
+
+        features = init_features
+
+        # Encoder
+        self.encoder1 = ACSUNet._block(in_channels, features, name="enc1")
+        self.pool1 = nn.MaxPool3d(kernel_size=2, stride=2)
+        self.encoder2 = ACSUNet._block(features, features * 2, name="enc2")
+        self.pool2 = nn.MaxPool3d(kernel_size=2, stride=2)
+
+        # Bottleneck
+        self.bottleneck = ACSUNet._block(features * 2, features * 2, name="bottleneck")
+
+        # Decoder
+        self.up2 = nn.Upsample(scale_factor=2, mode="nearest")
+        self.decoder2 = ACSUNet._block((features * 2) * 2, features * 1, name="dec2")
+        self.up1 = nn.Upsample(scale_factor=2, mode="nearest")
+        self.decoder1 = ACSUNet._block(features * 2, features, name="dec1")
+
+        self.final_conv = ACSUNet.conv(
+            in_channels=features, out_channels=out_channels, kernel_size=1
+        )
+
+    def forward(self, x):
+        # Encode
+        enc1 = self.encoder1(x)
+        enc2 = self.encoder2(self.pool1(enc1))
+        bottleneck = self.bottleneck(self.pool2(enc2))
+
+        # Decode
+        dec2 = self.up2(bottleneck)
+        dec2 = torch.cat((dec2, enc2), dim=1)
+        dec2 = self.decoder2(dec2)
+        dec1 = self.up1(dec2)
+        dec1 = torch.cat((dec1, enc1), dim=1)
+        dec1 = self.decoder1(dec1)
+
+        return torch.sigmoid(self.final_conv(dec1))
+
+    @staticmethod
+    def _block(in_channels, features, name):
+        return nn.Sequential(
+            OrderedDict(
+                [
+                    (
+                        name + "conv1",
+                        ACSUNet.conv(
+                            in_channels=in_channels,
+                            out_channels=features,
+                            kernel_size=3,
+                            padding=1,
+                            bias=False,
+                        ),
+                    ),
+                    (name + "norm1", nn.BatchNorm3d(num_features=features)),
+                    (name + "relu1", nn.ReLU(inplace=True)),
+                    (
+                        name + "conv2",
+                        ACSUNet.conv(
+                            in_channels=features,
+                            out_channels=features,
+                            kernel_size=3,
+                            padding=1,
+                            bias=False,
+                        ),
+                    ),
+                    (name + "norm2", nn.BatchNorm3d(num_features=features)),
+                    (name + "relu2", nn.ReLU(inplace=True)),
+                ]
+            )
+        )
+
+
 if __name__ == '__main__':
     device = "cuda"
     # size = 256
