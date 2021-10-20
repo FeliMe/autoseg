@@ -1,5 +1,6 @@
 from datetime import datetime
 import os
+from typing import List
 import warnings
 
 import numpy as np
@@ -15,6 +16,23 @@ def read_file(path: str):
     with open(path, 'r') as f:
         data = f.read().replace('\n', '')
     return data
+
+
+def read_list_file(list_file: str) -> List[str]:
+    """Open a textfile with and return a list of it's lines"""
+    with open(list_file, "r") as file_ref:
+        lines = file_ref.readlines()
+        file_list = [line.rstrip() for line in lines]
+    return file_list
+
+
+def read_list_file_to_abs_path(list_file: str, base: str) -> List[str]:
+    """Open a textfile with and return a list of it's lines concatenated with
+    the base path"""
+    with open(list_file, "r") as file_ref:
+        lines = file_ref.readlines()
+        file_list = [os.path.join(base, line.rstrip()) for line in lines]
+    return file_list
 
 
 def filelist_size(files):

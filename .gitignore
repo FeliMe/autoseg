@@ -1,4 +1,4 @@
-# Hidden files
+ Hidden files
 .DS_Store
 
 # Byte-compiled / optimized / DLL files
@@ -20,5 +20,10 @@ __pycache__/
 # All files in model_ckpts
 /uas_mood/model_ckpts/**
 
-# Tester file
+# Run and tester file
 /uas_mood/tester.py
+/uas_mood/run.sh
+
+# w&b-created directories
+/uas_mood/artifacts/
+/uas_mood/wandb/

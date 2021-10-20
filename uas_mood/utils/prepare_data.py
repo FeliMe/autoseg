@@ -7,6 +7,7 @@ import shutil
 
 import numpy as np
 from tqdm import tqdm
+import pandas as pd
 
 from uas_mood.utils.test_anomalies import create_random_anomaly
 from uas_mood.utils.data_utils import load_nii, save_nii
@@ -26,48 +27,6 @@ BRAINROOT = os.path.join(MOODROOT, "brain")
 ABDOMTRAIN = os.path.join(ABDOMROOT, "train")
 BRAINTRAIN = os.path.join(BRAINROOT, "train")
 
-FOLDERSTRUC = """Initial folder structure of the MOOD folder:
-Data available at: https://www.synapse.org/#!Synapse:syn21343101/wiki/599515
-
-MOOD
-|-- abdom
-|   |-- train
-|   |   |-- 00000.nii.gz
-|   |   |-- 00001.nii.gz
-|   |   `-- ...
-|   |-- toy
-|   |   |-- toy_0.nii.gz
-|   |   |-- toy_1.nii.gz
-|   |   `-- ...
-|   `-- toy_label
-|       |-- pixel
-|       |   |-- toy_0.nii.gz
-|       |   |-- toy_1.nii.gz
-|       |   `-- ...
-|       `-- sample
-|           |-- toy_0.nii.gz.txt
-|           |-- toy_1.nii.gz.txt
-|           `-- ...
-´-- brain
-    |-- train
-    |   |-- 00000.nii.gz
-    |   |-- 00001.nii.gz
-    |   `-- ...
-    |-- toy
-    |   |-- toy_0.nii.gz
-    |   |-- toy_1.nii.gz
-    |   `-- ...
-    `-- toy_label
-        |-- pixel
-        |   |-- toy_0.nii.gz
-        |   |-- toy_1.nii.gz
-        |   `-- ...
-        `-- sample
-            |-- toy_0.nii.gz.txt
-            |-- toy_1.nii.gz.txt
-            `-- ...
-"""
-
 
 def sanity_check():
     # Rename train folders if necessary
@@ -84,7 +43,7 @@ def sanity_check():
     folder_ok = True
     folder_ok &= os.path.isdir(ABDOMTRAIN)
     folder_ok &= os.path.isdir(BRAINTRAIN)
-    assert folder_ok, FOLDERSTRUC
+    assert folder_ok
 
     # Check if all files are present
     n_abdom_train = len(glob(f"{ABDOMTRAIN}/?????.nii.gz"))
@@ -182,42 +141,93 @@ def create_test_anomalies(src_dir, target_dir, segmentation_dir, label_dir):
         print(f"{k}: absolute {v}, relative {v / n_files:.3f}")
 
 
+def prepare_chestxray14(root_dir):
+    """Prepare the Chest X-Ray14 dataset for anomaly detection. This will 
+    remove all non-PA images, sort by gender and split by anomaly.
+
+    PREREQUISIT: Move all image files to {root_dir}/images/"""
+    # Load csv with metadata
+    meta = pd.read_csv(os.path.join(root_dir, "Data_Entry_2017_v2020.csv"),
+                       delimiter=",")
+
+    # Get a list of all images
+    image_dir = os.path.join(root_dir, "images")
+    all_images = glob(f"{image_dir}/*.png")
+    if len(all_images) == 0:
+        raise RuntimeError(f"No images found, please make sure all images are in {image_dir}")
+
+    # Remove all non-PA images
+    non_pa = meta[meta["View Position"] != "PA"]
+    not_used_dir = os.path.join(image_dir, "not_used")
+    os.makedirs(not_used_dir, exist_ok=True)
+    for f in non_pa["Image Index"]:
+        non_pa_file = os.path.join(image_dir, f)
+        if os.path.isfile(non_pa_file):
+            new_path = os.path.join(not_used_dir, f)
+            shutil.move(non_pa_file, new_path)
+
+    # Split by gender
+    meta_used = meta[meta["View Position"] == "PA"]
+    meta_used = meta_used[meta_used["Patient Age"] >= 18]
+    meta_pa_male = meta_pa[meta_pa["Patient Gender"] == "M"]
+    meta_pa_female = meta_pa[meta_pa["Patient Gender"] == "F"]
+
+    # Split by normal anomal
+    for meta_gender, gender in zip([meta_pa_male, meta_pa_female], ["M", "F"]):
+        meta_normal = meta_gender[meta_gender["Finding Labels"] == "No Finding"]
+        meta_anomal = meta_gender[meta_gender["Finding Labels"] != "No Finding"]
+
+        import IPython ; IPython.embed() ; exit(1)
+
+
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    # Arguments for preparing MOOD data
+    parser.add_argument("--mood", action="store_true")
     parser.add_argument("--split", action="store_true")
     parser.add_argument("--create_anomalies", action="store_true")
     parser.add_argument("--data", type=str,
-                        choices=["brain", "abdom"], required=True)
+                        choices=["brain", "abdom"])
+    # Arguments for preparing Chest X-Ray data
+    parser.add_argument("--chestxray14", action="store_true")
+    parser.add_argument("--cxr14_root", type=str,
+                        help="Root directory of Chest X-Ray14 dataset")
     args = parser.parse_args()
 
     seed = 0
     random.seed(seed)
     np.random.seed(seed)
 
-    if args.split:
-        # Check if data is correctly downloaded
-        # sanity_check()
-        if args.data == "abdom":
-            print("Splitting abdom files")
-            split_ds(ABDOMROOT)
-        else:
-            print("Splitting brain files")
-            split_ds(BRAINROOT)
+    if args.mood:
+        if args.split:
+            # Check if data is correctly downloaded
+            # sanity_check()
+            if args.data == "abdom":
+                print("Splitting abdom files")
+                split_ds(ABDOMROOT)
+            else:
+                print("Splitting brain files")
+                split_ds(BRAINROOT)
 
-    if args.create_anomalies:
-        if args.data == "abdom":
-            print("Creating artificial anomalies for abdomen test")
-            create_test_anomalies(
-                src_dir=os.path.join(ABDOMROOT, "test_raw"),
-                target_dir=os.path.join(ABDOMROOT, "test"),
-                segmentation_dir=os.path.join(ABDOMROOT, "test_label", "pixel"),
-                label_dir=os.path.join(ABDOMROOT, "test_label", "sample")
-            )
-        else:
-            print("Creating artificial anomalies for brain test")
-            create_test_anomalies(
-                src_dir=os.path.join(BRAINROOT, "test_raw"),
-                target_dir=os.path.join(BRAINROOT, "test"),
-                segmentation_dir=os.path.join(BRAINROOT, "test_label", "pixel"),
-                label_dir=os.path.join(BRAINROOT, "test_label", "sample")
-            )
+        if args.create_anomalies:
+            if args.data == "abdom":
+                print("Creating artificial anomalies for abdomen test")
+                create_test_anomalies(
+                    src_dir=os.path.join(ABDOMROOT, "test_raw"),
+                    target_dir=os.path.join(ABDOMROOT, "test"),
+                    segmentation_dir=os.path.join(ABDOMROOT, "test_label", "pixel"),
+                    label_dir=os.path.join(ABDOMROOT, "test_label", "sample")
+                )
+            else:
+                print("Creating artificial anomalies for brain test")
+                create_test_anomalies(
+                    src_dir=os.path.join(BRAINROOT, "test_raw"),
+                    target_dir=os.path.join(BRAINROOT, "test"),
+                    segmentation_dir=os.path.join(BRAINROOT, "test_label", "pixel"),
+                    label_dir=os.path.join(BRAINROOT, "test_label", "sample")
+                )
+
+    if args.chestxray14:
+        prepare_chestxray14(args.cxr14_root)

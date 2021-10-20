@@ -22,6 +22,15 @@ def plot(images):
     plt.show()
 
 
+def plot2(img, f=None):
+    plt.imshow(img, vmin=0., vmax=1., cmap="gray")
+    plt.axis("off")
+    if f is None:
+        plt.show()
+    else:
+        plt.savefig(f, bbox_inches='tight', pad_inches=0)
+
+
 def sample_location_brain(img: np.ndarray):
     """Sample a random location in a brain mri only where there is an object"""
     obj_inds = np.where(img > 0)
@@ -239,31 +248,27 @@ def patch_exchange(img1: np.ndarray, img2: np.ndarray, mask: np.ndarray):
 
 if __name__ == "__main__":
     seed = 0
-    np.random.seed(seed)
-    # i_slice = 128
-    i_slice = 256
-    n_channel_mod = 3
-    lo = n_channel_mod // 2
-    hi = n_channel_mod // 2 + 1
-    # path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
-    path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
+    # np.random.seed(seed)
+    i_slice = 128
+
+    path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
+    # path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
     volume1 = process_scan(path)
-    img1 = volume1[i_slice - lo: i_slice + hi]
-    # img1 = volume1[i_slice]
-    # path = "/home/felix/datasets/MOOD/brain/test/00481_source_deformation.nii.gz"
-    path = "/home/felix/datasets/MOOD/abdom/test/00332_uniform_shift.nii.gz"
+    img1 = volume1[None, i_slice]
+
+    path = "/home/felix/datasets/MOOD/brain/test/00481_source_deformation.nii.gz"
+    # path = "/home/felix/datasets/MOOD/abdom/test/00332_uniform_shift.nii.gz"
     volume2 = process_scan(path)
-    img2 = volume2[i_slice - lo: i_slice + hi]
-    # img2 = volume2[i_slice]
+    img2 = volume2[None, i_slice]
+
     mask = sample_complete_mask(
-        n_patches=1, blur_prob=0., img=img1, size_range=[0.5, 0.5],
+        n_patches=1, blur_prob=0., img=img1, size_range=[0.2, 0.2],
         data="abdom", patch_type="polygon", poly_type="cubic", n_vertices=10
     )
     patchex, label = patch_exchange(img1, img2, mask)
 
     img = (img1 + mask).clip(0., 1.)
-    i = 0
-    plot([img[i], label[i], patchex[i]])
+    plot([img[0], label[0], patchex[0]])
     # plot([img, label, patchex])
     import IPython
     IPython.embed()

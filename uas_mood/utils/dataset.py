@@ -3,7 +3,8 @@ from glob import glob
 from multiprocessing import Pool
 import os
 import random
-from time import time
+from typing import List
+from warnings import warn
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,18 +12,19 @@ import torch
 from torch.utils.data import Dataset
 
 from uas_mood.utils.artificial_anomalies import patch_exchange, sample_complete_mask
-from uas_mood.utils.artificial_anomalies_3d import (
-    patch_exchange_3d,
-    random_crop_3D,
-    random_crop_centers_3D,
-    sample_polygon_3d,
+from uas_mood.utils.data_utils import (
+    load_image,
+    load_segmentation,
+    process_scan,
+    volume_viewer,
 )
-from uas_mood.utils.data_utils import load_segmentation, process_scan, volume_viewer
+from uas_mood.utils.utils import read_list_file
 
 
 DATAROOT = os.environ.get("DATAROOT")
 assert DATAROOT is not None
 MOODROOT = os.path.join(DATAROOT, "MOOD")
+CXR14ROOT = os.path.join(DATAROOT, "CXR8")
 
 
 def plot(images, f=None):
@@ -86,6 +88,7 @@ class TestDataset(PreloadDataset):
     def load_batch(files, img_size):
         samples = []
         segmentations = []
+
         for f in files:
             # Samples are shape [width, height, slices]
             samples.append((f, process_scan(f, img_size, equalize_hist=False)))
@@ -103,47 +106,13 @@ class TestDataset(PreloadDataset):
         return self.samples[idx], self.segmentations[idx]
 
 
-class TestDataset3D(PreloadDataset):
-    def __init__(self, files, return_crops: bool=False, crop_size: int=None):
-        super().__init__()
-
-        self.samples = files
-        self.return_crops = return_crops
-        self.crop_size = crop_size
-
-    def __len__(self):
-        return len(self.samples)
-
-    @staticmethod
-    def load_batch(files, img_size):
-        samples = []
-        segmentations = []
-        for f in files:
-            # Samples are shape [width, height, slices]
-            samples.append((f, process_scan(f, img_size, equalize_hist=False)))
-            # Load segmentation, is in folder test_label/pixel instead of test
-            f_seg = f.replace("test", "test_label/pixel")
-            segmentations.append(
-                (f_seg, load_segmentation(f_seg, img_size)))
-
-        return {
-            "samples": samples,
-            "segmentations": segmentations
-        }
-
-    def __getitem__(self, idx):
-        f = self.samples[idx]
-        sample = process_scan(f, equalize_hist=False)
-        f_seg = f.replace("test", "test_label/pixel")
-        segmentation = process_scan(f_seg, equalize_hist=False)
-        return sample, segmentation
-
-
 class PatchSwapDataset(PreloadDataset):
-    def __init__(self, files, img_size, data, slices_on_forward):
+    def __init__(self, files, img_size, data, slices_on_forward, num_anomalies=1):
         super().__init__()
         assert data in ["brain", "abdom"]
         assert slices_on_forward in [1, 3], "PatchSwapDataset only works with slices_on_forward 1 or 3"
+
+        self.num_anomalies = num_anomalies
 
         res = self.load_files_to_ram(files, img_size)
         samples = [s for r in res for s in r]
@@ -152,7 +121,8 @@ class PatchSwapDataset(PreloadDataset):
         # Number of scans in dataset
         self.n_scans = len(samples)
         # Number of slices per scan (3 viewing directions)
-        self.n_slices = np.array(samples[0].shape).sum()
+        # self.n_slices = np.array(samples[0].shape).sum()
+        self.n_slices = -1
         # Number of slices in one viewing direction
         self.sample_depth = samples[0].shape[0]
 
@@ -198,9 +168,9 @@ class PatchSwapDataset(PreloadDataset):
 
         # Sample an anomaly mask
         mask = sample_complete_mask(
-            n_patches=1, blur_prob=0., img=img1, size_range=size_range,
-            data=self.data, patch_type="polygon", poly_type="cubic",
-            n_vertices=10
+            n_patches=self.num_anomalies, blur_prob=0., img=img1,
+            size_range=size_range, data=self.data, patch_type="polygon",
+            poly_type="cubic", n_vertices=10
         )
 
         # Swap patches between img1 and img2 at mask
@@ -223,7 +193,6 @@ class PatchSwapDataset(PreloadDataset):
                 idx -= 1  # Upper border, select prev idx
 
         # Select sample
-        # sample = self.samples[idx].copy()
         lo = self.slices_on_forward // 2
         hi = self.slices_on_forward // 2 + 1
         sample = np.stack(self.samples[idx - lo:idx + hi]).copy()
@@ -232,7 +201,6 @@ class PatchSwapDataset(PreloadDataset):
         i_slice = idx % self.n_slices
         other_scan = random.randint(0, self.n_scans - 1)
         other_idx = other_scan * self.n_slices + i_slice
-        # other_sample = self.samples[other_idx]
         other_sample = np.stack(self.samples[other_idx - lo:other_idx + hi])
 
         # Create foreign patch interpolation
@@ -241,42 +209,35 @@ class PatchSwapDataset(PreloadDataset):
         return sample, patch
 
 
-class PatchSwapDataset3D(PreloadDataset):
-    def __init__(self, files, data, load_to_ram: bool=False,
-                 return_crops: bool=False, batch_size: int=None,
-                 crop_size: int=None):
+class CXR14PatchSwapDataset(Dataset):
+    def __init__(self, files: List[str], img_size: int, load_to_ram: bool = True,
+                 anomaly_shape: str = "polygon", num_anomalies: int = 1):
         super().__init__()
-        assert data in ["brain", "abdom"]
-        if return_crops and (batch_size is None or crop_size is None):
-            raise RuntimeError("If return_crops, batch_size and crop_size must be provided")
-
-        if load_to_ram:
-            # List of patient volumes [slices, w, h]
-            self.samples = self.load_files_to_ram(files, img_size=None)
-        else:
-            self.samples = files
-
+        self.samples = files
+        self.img_size = img_size
         self.load_to_ram = load_to_ram
-        self.data = data
-        self.return_crops = return_crops
-        self.batch_size = batch_size
-        self.crop_size = crop_size
+        self.anomaly_shape = anomaly_shape
+        self.num_anomalies = num_anomalies
+        print(f"Using {anomaly_shape}s as anomalies")
+
+        if self.load_to_ram:
+            warn("The functionality of this class only works with num_workers=0 in the DataLoader")
+
+        self.left_to_load = len(self.samples)
+
+    def load_sample(self, sample):
+        if isinstance(sample, str):
+            sample = load_image(sample, self.img_size).numpy()
+            self.left_to_load -= 1
+            return sample
+        else:
+            return sample
+
 
     def __len__(self):
         return len(self.samples)
 
-    @staticmethod
-    def load_batch(files):
-        samples = []
-        for f in files:
-            # Samples are shape [width, height, slices]
-            samples.append(process_scan(f, equalize_hist=False))
-            if np.any(np.isnan(samples[-1])):
-                print(f)
-
-        return samples
-
-    def create_anomaly(self, vol1, vol2):
+    def create_anomaly(self, img1, img2):
         """Create a sample where one patch is switched from another sample
         with a random interpolation factor
 
@@ -284,14 +245,17 @@ class PatchSwapDataset3D(PreloadDataset):
             img1 (torch.Tensor): shape [w, h]
             img2 (torch.Tensor): shape [w, h]
         """
-        size_range = [.1, .6] if self.data == "brain" else [.2, .6]
+        size_range = [.05, .7]
 
         # Sample an anomaly mask
-        mask = sample_polygon_3d(vol1, size_range=size_range, data=self.data,
-                                 n_vertices=30)
+        mask = sample_complete_mask(
+            n_patches=self.num_anomalies, blur_prob=0., img=img1,
+            size_range=size_range, data="cxr", patch_type=self.anomaly_shape,
+            poly_type="cubic", n_vertices=10
+        )
 
         # Swap patches between img1 and img2 at mask
-        patchex, label = patch_exchange_3d(vol1, vol2, mask)
+        patchex, label = patch_exchange(img1, img2, mask)
 
         # Convert to tensor
         patchex = torch.from_numpy(patchex)
@@ -300,39 +264,35 @@ class PatchSwapDataset3D(PreloadDataset):
         return patchex, label
 
     def __getitem__(self, idx):
-        # Select sample
+        # Load a sample
+        self.samples[idx] = self.load_sample(self.samples[idx])
         sample = self.samples[idx]
-        if not self.load_to_ram:
-            sample = process_scan(sample, equalize_hist=False)
-        else:
-            sample = sample.copy()
 
-        # Randomly select another sample
+        # Randomly select another sample at the same slice
         other_idx = random.randint(0, len(self) - 1)
+        self.samples[other_idx] = self.load_sample(self.samples[other_idx])
         other_sample = self.samples[other_idx]
-        if not self.load_to_ram:
-            other_sample = process_scan(other_sample,
-                                        equalize_hist=False)
 
         # Create foreign patch interpolation
         sample, patch = self.create_anomaly(sample, other_sample)
 
-        if self.return_crops:
-            # TODO: Maybe sample for patch first so that all samples contain anomalies
-            centers = random_crop_centers_3D(sample, data=self.data,
-                                             n_crops=self.batch_size)
-            sample = random_crop_3D(sample, size=self.crop_size, centers=centers)
-            patch = random_crop_3D(patch, size=self.crop_size, centers=centers)
-
-            # Expand second dim
-            sample = sample[:, None]
-            patch = patch[:, None]
-        else:
-            # Expand first dim
-            sample = sample[None]
-            patch = patch[None]
-
         return sample, patch
+
+
+class CXR14TestDataset(Dataset):
+    def __init__(self, files, labels, img_size):
+        super().__init__()
+        self.samples = files
+        self.labels = labels
+        self.img_size = img_size
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        sample = load_image(self.samples[idx], self.img_size)
+        label = self.labels[idx]
+        return sample, label
 
 
 def get_train_files(root: str, body_region: str):
@@ -361,7 +321,7 @@ def get_test_files(root: str, body_region: str):
 if __name__ == '__main__':
     data = "brain"
     # data = "abdom"
-    img_size = 256 if data == "brain" else 512
+    img_size = 512 if data == "abdom" else 256
     train_files = get_train_files(MOODROOT, data)
     test_files = get_test_files(MOODROOT, data)
     print(f"# train_files: {len(train_files)}")
@@ -383,16 +343,12 @@ if __name__ == '__main__':
     # x = x[1].unsqueeze(0)
     # plot([x[0], (x[0] + y[0]).clip(0, 1), y[0]], f="fig.png")
 
-    # ----- PatchSwapDataset3D -----
-    ds = PatchSwapDataset3D(train_files[:10], data, load_to_ram=False,
-                            return_crops=True, batch_size=32, crop_size=64)
-    t = time()
+    # ----- CXR14PatchSwapDataset -----
+    img_size = 256
+    train_files = read_list_file(os.path.join(CXR14ROOT, "train_lists/norm_train_list.txt"))
+    train_files = [os.path.join(CXR14ROOT, "images", f) for f in train_files]
+    train_files = train_files[:1000]
+    ds = CXR14PatchSwapDataset(train_files, img_size=img_size)
     x, y = next(iter(ds))
-    print(f"{time() - t:.4f}s")
-    print(x.shape, y.shape, x.dtype, y.dtype, y.sum())
-    print(f"Fraction with anomalies: {(y.sum((2,3,4)) > 0).sum() / y.shape[0]:.4f}")
-    idx = torch.nonzero(y.sum(dim=(2, 3, 4)))[0, 0] if y.sum() > 0 else 0
-    volume_viewer(y[idx, 0])
-    volume_viewer(x[idx, 0])
-
+    plot([x[0], y[0]])
     import IPython ; IPython.embed() ; exit(1)

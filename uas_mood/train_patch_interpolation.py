@@ -71,12 +71,12 @@ class LitModel(pl.LightningModule):
         if self.args.model == "unet":
             self.print_("Using UNet")
             self.net = models.UNet(in_channels=self.args.slices_on_forward,
-                                 out_channels=1, init_features=32)
+                                 out_channels=1, init_features=args.model_width)
             self.net.apply(models.weights_init_relu)
         else:
             self.print_("Using Wide ResNet")
             self.net = models.WideResNetAE(inp_size=args.img_size,
-                                           widen_factor=args.model_width)
+                                           widen_factor=4)
 
         # Example input array needed to log the graph in tensorboard
         # input_size = (1, args.img_size, args.img_size)
@@ -429,11 +429,13 @@ def train(args, trainer, train_files):
 
     # Create Datasets and Dataloaders
     train_ds = PatchSwapDataset(training_files, args.img_size, data=args.data,
-                                slices_on_forward=args.slices_on_forward)
+                                slices_on_forward=args.slices_on_forward,
+                                num_anomalies=args.num_anomalies)
     trainloader = DataLoader(train_ds, batch_size=args.batch_size,
                              num_workers=args.num_workers, shuffle=True)
     val_ds = PatchSwapDataset(val_files, args.img_size, data=args.data,
-                              slices_on_forward=args.slices_on_forward)
+                              slices_on_forward=args.slices_on_forward,
+                              num_anomalies=args.num_anomalies)
     valloader = DataLoader(val_ds, batch_size=args.batch_size,
                            num_workers=args.num_workers, shuffle=True)
 
@@ -498,6 +500,7 @@ if __name__ == '__main__':
                         choices=["brain", "abdom"])
     parser.add_argument("--img_size", type=int, default=None)
     parser.add_argument("--slices_on_forward", type=int, default=3)
+    parser.add_argument("--num_anomalies", type=int, default=1)
     # Engineering params
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--precision", type=int, default=32)
@@ -515,7 +518,7 @@ if __name__ == '__main__':
     # Model params
     parser.add_argument("--model", type=str, choices=["unet", "resnet"],
                         default="unet")
-    parser.add_argument("--model_width", type=int, default=4)
+    parser.add_argument("--model_width", type=int, default=32)
     # Real Hyperparameters
     parser.add_argument("--max_epochs", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -541,8 +544,8 @@ if __name__ == '__main__':
         check_val_every_n_epoch = 1
         val_check_interval = args.val_every_epoch
     else:
-        check_val_every_n_epoch = args.val_every_epoch
-        val_check_interval = 1
+        check_val_every_n_epoch = int(args.val_every_epoch)
+        val_check_interval = 1.0
 
     # Select default img_size
     if args.img_size is None and args.data == "brain": args.img_size = 256

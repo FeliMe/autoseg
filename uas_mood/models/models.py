@@ -1,7 +1,9 @@
 from collections import OrderedDict
 from math import log
+from typing import List
 
 import torch
+from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 from torchsummary import summary
@@ -336,6 +338,165 @@ class UNet(nn.Module):
         )
 
 
+""""""""""""""""""""""""""""""""" UNet """""""""""""""""""""""""""""""""
+
+
+class VAE(nn.Module):
+    """Source: https://github.com/AntixK/PyTorch-VAE/blob/master/models/vanilla_vae.py"""
+    def __init__(self,
+                 img_size: Tensor,
+                 in_channels: int = 1,
+                 out_channels: int = 1,
+                 num_layers: int = 5,
+                 latent_dim: int = 256,
+                 model_width: int = 32,
+                 hidden_dims: List = None) -> None:
+        super(VAE, self).__init__()
+
+        self.latent_dim = latent_dim
+
+        assert len(img_size) == 2
+        if isinstance(img_size, list) or isinstance(img_size, tuple):
+            img_size = torch.tensor(img_size)
+
+        if hidden_dims is None:
+            hidden_dims = [model_width * (2**i) for i in range(num_layers)]
+        self.hidden_dims = hidden_dims
+
+        modules = []
+
+        """ Build encoder """
+        self.feat_size = img_size
+        for h_dim in hidden_dims:
+            modules.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels, out_channels=h_dim,
+                              kernel_size=4, stride=2, padding=1, bias=False),
+                    nn.BatchNorm2d(h_dim),
+                    nn.LeakyReLU())
+            )
+            in_channels = h_dim
+            self.feat_size = torch.div(self.feat_size, 2, rounding_mode="trunc")  # floor divide
+
+        self.encoder = nn.Sequential(*modules)
+        n_feats = int(torch.prod(self.feat_size)) * hidden_dims[-1]
+        self.fc_mu = nn.Linear(n_feats, latent_dim)
+        self.fc_var = nn.Linear(n_feats, latent_dim)
+
+
+        """ Build decoder """
+        modules = []
+
+        self.decoder_input = nn.Linear(latent_dim, n_feats)
+
+        hidden_dims.reverse()
+
+        for i in range(len(hidden_dims) - 1):
+            modules.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(hidden_dims[i],
+                                       hidden_dims[i + 1],
+                                       kernel_size=4,
+                                       stride=2,
+                                       padding=1,
+                                       bias=False),
+                    nn.BatchNorm2d(hidden_dims[i + 1]),
+                    nn.LeakyReLU())
+            )
+
+
+
+        self.decoder = nn.Sequential(*modules)
+
+        self.final_layer = nn.Sequential(
+                            nn.ConvTranspose2d(hidden_dims[-1],
+                                               hidden_dims[-1],
+                                               kernel_size=4,
+                                               stride=2,
+                                               padding=1,
+                                               bias=False),
+                            nn.BatchNorm2d(hidden_dims[-1]),
+                            nn.LeakyReLU(),
+                            nn.Conv2d(hidden_dims[-1], out_channels,
+                                      kernel_size=3, padding=1),
+                            nn.Tanh())
+
+    def encode(self, inp: Tensor) -> List[Tensor]:
+        """
+        Encodes the input by passing through the encoder network
+        and returns the latent codes.
+        :param inp: (Tensor) Input tensor to encoder [N x C x H x W]
+        :return: (Tensor) List of latent codes
+        """
+        result = self.encoder(inp)
+        result = torch.flatten(result, start_dim=1)
+
+        # Split the result into mu and var components
+        # of the latent Gaussian distribution
+        mu = self.fc_mu(result)
+        log_var = self.fc_var(result)
+
+        return [mu, log_var]
+
+    def decode(self, z: Tensor) -> Tensor:
+        """
+        Maps the given latent codes
+        onto the image space.
+        :param z: (Tensor) [B x D]
+        :return: (Tensor) [B x C x H x W]
+        """
+        result = self.decoder_input(z)
+        result = result.view(-1, self.hidden_dims[0], *self.feat_size.tolist())
+        result = self.decoder(result)
+        result = self.final_layer(result)
+        return result
+
+    @staticmethod
+    def reparameterize(mu: Tensor, logvar: Tensor) -> Tensor:
+        """
+        Reparameterization trick to sample from N(mu, var) from
+        N(0,1).
+        :param mu: (Tensor) Mean of the latent Gaussian [B x D]
+        :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
+        :return: (Tensor) [B x D]
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps * std + mu
+
+    def forward(self, inp: Tensor) -> List[Tensor]:
+        mu, log_var = self.encode(inp)
+        z = self.reparameterize(mu, log_var)
+        reconstruction = self.decode(z)
+        return [reconstruction, mu, log_var]
+
+    @staticmethod
+    def loss_function(reconstruction: Tensor,
+                      inp: Tensor,
+                      mu: Tensor,
+                      log_var: Tensor,
+                      M_N: float) -> list:
+        """
+        Computes the VAE loss function.
+        KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
+        :param reconstruction: (Tensor)
+        :param inp: (Tensor)
+        :param mu: (Tensor)
+        :param log_var: (Tensor)
+        :param M_N: (float)
+        :return:
+        """
+        # Account for the minibatch samples from the dataset
+        # M_N = batch_size / len(dataset)
+        kld_weight = M_N
+        recons_loss = F.mse_loss(reconstruction, inp)
+
+        kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
+
+        loss = recons_loss + kld_weight * kld_loss
+        return [loss, recons_loss, kld_loss]
+
+
 """"""""""""""""""""""""""""""""" ACSUNet """""""""""""""""""""""""""""""""
 
 class ACSUNet(nn.Module):
@@ -416,17 +577,22 @@ class ACSUNet(nn.Module):
 
 
 if __name__ == '__main__':
-    device = "cuda"
+    device = "cpu"
     # size = 256
     # model = UNet(in_channels=1, out_channels=1, init_features=32).to(device)
     # x = torch.randn(2, 1, size, size).to(device)
     # y = model(x)
-    size = 64
-    batch_size = 32
-    model = ACSUNet(in_channels=1, out_channels=1, init_features=16).to(device)
-    x = torch.randn(batch_size, 1, size, size, size).to(device)
-    print(summary(model, input_size=x.shape[1:], batch_size=2, device=device))
+
+    size = 256
+    model = WideResNetAE(inp_size=size).to(device)
+    x = torch.randn(2, 1, size, size).to(device)
     y = model(x)
-    print(y.shape, y.min(), y.max())
-    print(torch.cuda.max_memory_allocated(device))
+
+    # size = 256
+    # batch_size = 2
+    # model = VAE(in_channels=1, img_size=torch.tensor([size, size])).to(device)
+    # x = torch.randn(batch_size, 1, size, size).to(device)
+    # print(summary(model, input_size=x.shape[1:], batch_size=2, device=device))
+    # y = model(x)
+
     import IPython ; IPython.embed() ; exit(1)
