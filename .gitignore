@@ -27,3 +27,7 @@ __pycache__/
 # w&b-created directories
 /uas_mood/artifacts/
 /uas_mood/wandb/
+
+# Baseline scripts
+/uas_mood/train_vae_cxr14.py
+/uas_mood/train_vae_mood.py
