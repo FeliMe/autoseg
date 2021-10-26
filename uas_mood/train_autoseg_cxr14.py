@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 from random import shuffle
 from time import time
 from warnings import warn
@@ -288,7 +289,7 @@ class LitModel(pl.LightningModule):
             })
 
 
-def train(args, trainer, train_files, test_files_normal, test_files_anomal):
+def train(args, trainer, train_files):
     # Init lighning model
     if args.model_ckpt:
         utils.printer(
@@ -303,35 +304,21 @@ def train(args, trainer, train_files, test_files_normal, test_files_anomal):
         # Make wandb_logger watch model
         trainer.logger.watch(model)
 
-    # # Split into train- and val-files
-    # random.shuffle(train_files)
-    # split_idx = int((1 - args.val_fraction) * len(train_files))
-    # training_files = train_files[:split_idx]
-    # val_files = train_files[split_idx:]
-    # utils.printer(f"Training with {len(training_files)} files", args.verbose)
-    # utils.printer(f"Validating on {len(val_files)} files", args.verbose)
+    # Split into train- and val-files
+    random.shuffle(train_files)
+    split_idx = int((1 - args.val_fraction) * len(train_files))
+    training_files = train_files[:split_idx]
+    val_files = train_files[split_idx:]
+    utils.printer(f"Training with {len(training_files)} files", args.verbose)
+    utils.printer(f"Validating on {len(val_files)} files", args.verbose)
 
-    # # Create Datasets and Dataloaders
-    # train_ds = CXR14PatchSwapDataset(training_files, args.img_size)
-    # trainloader = DataLoader(train_ds, batch_size=args.batch_size,
-    #                          num_workers=0, shuffle=True)
-    # val_ds = CXR14PatchSwapDataset(val_files, args.img_size)
-    # valloader = DataLoader(val_ds, batch_size=args.batch_size,
-    #                        num_workers=0, shuffle=True)
-
-    # Create validation set
-    val_files_normal = test_files_normal[:int(args.val_fraction * len(test_files_normal))]
-    val_files_anomal = test_files_anomal[:int(args.val_fraction * len(test_files_anomal))]
-    val_files = val_files_normal + val_files_anomal
-    val_labels = ([0] * len(val_files_normal)) + ([1] * len(val_files_anomal))
-
-    train_ds = CXR14PatchSwapDataset(train_files, args.img_size,
-                                     anomaly_shape=args.anomaly_shape)
+    # Create Datasets and Dataloaders
+    train_ds = CXR14PatchSwapDataset(training_files, args.img_size)
     trainloader = DataLoader(train_ds, batch_size=args.batch_size,
-                             num_workers=args.num_workers, shuffle=True)
-    val_ds = CXR14TestDataset(val_files, val_labels, args.img_size)
+                             num_workers=0, shuffle=True)
+    val_ds = CXR14PatchSwapDataset(val_files, args.img_size)
     valloader = DataLoader(val_ds, batch_size=args.batch_size,
-                           num_workers=args.num_workers)
+                           num_workers=0, shuffle=True)
 
     # Train
     model.start_time = time()
@@ -502,6 +489,6 @@ if __name__ == '__main__':
     else:
         model = None
         if args.train:
-            model = train(args, trainer, train_files, test_files_normal, test_files_anomal)
+            model = train(args, trainer, train_files)
         if args.test:
             test(args, trainer, test_files_normal, test_files_anomal, model=model)

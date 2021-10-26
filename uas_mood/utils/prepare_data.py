@@ -180,8 +180,6 @@ def prepare_chestxray14(root_dir):
         import IPython ; IPython.embed() ; exit(1)
 
 
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Arguments for preparing MOOD data
