@@ -250,6 +250,7 @@ if __name__ == "__main__":
     seed = 0
     # np.random.seed(seed)
     i_slice = 128
+    i_slice = 140
 
     path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
     # path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
@@ -262,14 +263,12 @@ if __name__ == "__main__":
     img2 = volume2[None, i_slice]
 
     mask = sample_complete_mask(
-        n_patches=1, blur_prob=0., img=img1, size_range=[0.2, 0.2],
+        n_patches=1, blur_prob=0., img=img1, size_range=[0.4, 0.4],
         data="abdom", patch_type="polygon", poly_type="cubic", n_vertices=10
     )
     patchex, label = patch_exchange(img1, img2, mask)
 
     img = (img1 + mask).clip(0., 1.)
-    plot([img[0], label[0], patchex[0]])
+    plot([img[0], img2[0], label[0], patchex[0]])
     # plot([img, label, patchex])
-    import IPython
-    IPython.embed()
-    exit(1)
+    import IPython ; IPython.embed() ; exit(1)

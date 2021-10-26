@@ -1,5 +1,6 @@
 import argparse
 import os
+from random import shuffle
 from time import time
 from warnings import warn
 
@@ -26,16 +27,17 @@ class LitProgressBar(pl.callbacks.progress.ProgressBar):
         return tqdm(disable=True)
 
 
-def plot(images):
-    if not isinstance(images, list):
-        images = [images]
-    n = len(images)
-    fig = plt.figure(figsize=(4 * n, 4))
+def plot(img, seg=None, f=None):
     plt.axis("off")
-    for i, im in enumerate(images):
-        fig.add_subplot(1, n, i + 1)
-        plt.imshow(im, cmap="gray", vmin=0., vmax=1.)
-    plt.show()
+    plt.imshow(img, cmap="gray", vmin=0., vmax=1.)
+
+    if seg is not None:
+        plt.imshow(seg, cmap="jet", alpha=0.4)
+
+    if f is None:
+        plt.show()
+    else:
+        plt.savefig(f, bbox_inches='tight', pad_inches=0)
 
 
 class LitModel(pl.LightningModule):
@@ -47,14 +49,23 @@ class LitModel(pl.LightningModule):
         self.args = self.hparams.args
 
         # Network
-        self.net = models.VAE(img_size=torch.tensor([args.img_size, args.img_size]),
-                              model_width=args.model_width)
-        self.net.apply(models.weights_init_relu)
+        if self.args.model == "UNet":
+            self.print_("Using UNet")
+            self.net = models.UNet(in_channels=1, out_channels=1,
+                                init_features=self.args.model_width)
+            self.net.apply(models.weights_init_relu)
+        else:
+            self.print_("Using ResNet")
+            self.net = models.WideResNetAE(inp_size=args.img_size,
+                                           widen_factor=self.args.model_width)
 
         # Example input array needed to log the graph in tensorboard
         input_size = (1, self.args.img_size, self.args.img_size)
         self.example_input_array = torch.randn(
             [5, *input_size])
+
+        # Init Loss function
+        self.loss_fn = torch.nn.BCELoss()
 
         if self.logger:
             self.logger.log_hyperparams(self.args)
@@ -125,60 +136,42 @@ class LitModel(pl.LightningModule):
         })
 
     def training_step(self, batch, batch_idx):
-        inp, _ = batch
-        rec, mu, log_var = self(inp)
+        x, y = batch
+        pred = self(x)
 
         # Compute loss
-        loss, rec_loss, kl_loss = self.net.loss_function(rec, inp, mu, log_var,
-                                                         self.args.M_N)
+        loss = self.loss_fn(pred, y)
 
-        self.log("train/loss", loss.cpu(), on_step=True)
-        self.log("train/rec_loss", rec_loss.cpu(), on_step=True)
-        self.log("train/kl_loss", kl_loss.cpu(), on_step=True)
+        self.log("loss", loss.cpu(), on_step=True)
 
-        return {"loss": loss.cpu(),
-                "rec_loss": rec_loss.detach().cpu(),
-                "kl_loss": kl_loss.detach().cpu()}
+        return {"loss": loss.cpu()}
 
     def training_epoch_end(self, outputs):
         # Stack all values to a dict
         out = self.stack_outputs(outputs)
 
-        mean_loss = out["loss"].mean()
-        mean_rec_loss = out["rec_loss"].mean()
-        mean_kl_loss = out["kl_loss"].mean()
-
         # Print training epoch summary
         self.print_(
-            f"Epoch [{self.current_epoch}/{self.args.max_epochs}]" \
-            f" Train loss: {mean_loss:.4f}" \
-            f" train rec loss: {mean_rec_loss:.4f}" \
-            f" train kl loss: {mean_kl_loss:.4f}")
+            f"Epoch [{self.current_epoch}/{self.args.max_epochs}] Train loss: {out['loss'].mean():.4f}")
 
         # Tensorboard logs
-        self.log_metric("train/epoch_loss", mean_loss)
-        self.log_metric("train/epoch_rec_loss", mean_rec_loss)
-        self.log_metric("train/epoch_kl_loss", mean_kl_loss)
+        self.log_metric("train_loss", out["loss"].mean())
 
     def validation_step(self, batch, batch_idx):
-        inp, y = batch
-        rec, mu, log_var = self(inp)
+        x, _, y = batch
+        pred = self(x)
+
+        score = pred.mean(dim=(1, 2, 3))
 
         # Compute loss
-        loss, rec_loss, kl_loss = self.net.loss_function(rec, inp, mu, log_var,
-                                                         self.args.M_N)
-
-        anomaly_map = (inp - rec).abs()
-        anomaly_score = anomaly_map.sum((1, 2, 3))
+        loss = self.loss_fn(score, y.float())
 
         return {
-            "inp": inp.cpu(),
+            "inp": x.cpu(),
             "label": y.cpu(),
             "loss": loss.cpu(),
-            "rec_loss": rec_loss.detach().cpu(),
-            "kl_loss": kl_loss.detach().cpu(),
-            "anomaly_map": anomaly_map.cpu(),
-            "anomaly_score": anomaly_score.cpu(),
+            "anomaly_map": pred.cpu(),
+            "anomaly_score": score.cpu(),
         }
 
     def validation_epoch_end(self, outputs):
@@ -210,6 +203,8 @@ class LitModel(pl.LightningModule):
             self.start_time, self.current_epoch * args.val_every_epoch, self.args.max_epochs
         )
         # Print validation summary
+        self.print_(
+            f"Pred max: {out['anomaly_map'].max():.4f}, pred min: {out['anomaly_map'].min():.4f}")
         self.print_(f"Val loss: {out['loss'].mean():.4f}, "
                     f"average precision val: {ap:.4f}\n"
                     f"Time elapsed: {time_elapsed}, "
@@ -218,31 +213,33 @@ class LitModel(pl.LightningModule):
                     f"Time for validation: {time() - val_start:.2f}s")
 
     def test_step(self, batch, batch_idx):
-        inp, y = batch
-        rec = self(inp)[0]
-        anomaly_map = (inp - rec).abs()
-        anomaly_score = anomaly_map.sum((1, 2, 3))
+        x, filename, y = batch
+
+        # Forward
+        pred = self(x)
 
         return {
-            "inp": inp.cpu(),
+            "inp": x.cpu(),
             "label": y.cpu(),
-            "anomaly_map": anomaly_map.cpu(),
-            "anomaly_score": anomaly_score.cpu(),
+            "anomaly_map": pred.cpu(),
+            "filename": filename,
         }
 
     def test_epoch_end(self, outputs):
         # Stack all values to a dict
         out = self.stack_outputs(outputs)
 
-        # Unpack outputs
         inp = out["inp"]
         label = out["label"]
-        anomaly_score = out["anomaly_score"]
-        anomaly_map = out["anomaly_map"]
+        pred = out["anomaly_map"]
+        print(pred.min(), pred.max(), pred.mean())
+
+        # Get labels from segmentation masks and anomaly maps
+        pred_label = pred.sum((1, 2, 3))
 
         # Perform evaluation for all anomalies separately
         print("----- SAMPLE-WISE EVALUATION -----")
-        auroc, ap = evaluation.evaluate_sample_wise(anomaly_score, label)
+        auroc, ap = evaluation.evaluate_sample_wise(pred_label, label)
 
         if self.logger:
             # Save summary metrics
@@ -255,15 +252,15 @@ class LitModel(pl.LightningModule):
             # Filter positives
             is_positive = torch.where(label == 1)
             pos_inp = inp[is_positive]
-            pos_anomaly_map = anomaly_map[is_positive]
-            pos_anomaly_score = anomaly_score[is_positive]
+            pos_pred = pred[is_positive]
+            pos_pred_label = pred_label[is_positive]
 
             # Write best pos images
-            best_idx = torch.sort(pos_anomaly_score)[1][-10:]
+            best_idx = torch.sort(pos_pred_label)[1][-10:]
             best_pos_inp = pos_inp[best_idx]
-            best_pos_anomaly_map = pos_anomaly_map[best_idx]
+            best_pos_pred = pos_pred[best_idx]
 
-            best_pos_images = [best_pos_inp, best_pos_anomaly_map]
+            best_pos_images = [best_pos_inp, best_pos_pred]
             best_pos_titles = ["Best positive input image",
                                "Best positive anomaly map"]
 
@@ -275,11 +272,11 @@ class LitModel(pl.LightningModule):
             })
 
             # Write worst pos images
-            worst_idx = torch.sort(pos_anomaly_score)[1][:10]
+            worst_idx = torch.sort(pos_pred_label)[1][:10]
             worst_pos_inp = pos_inp[worst_idx]
-            worst_pos_anomaly_map = pos_anomaly_map[worst_idx]
+            worst_pos_pred = pos_pred[worst_idx]
 
-            worst_pos_images = [worst_pos_inp, worst_pos_anomaly_map]
+            worst_pos_images = [worst_pos_inp, worst_pos_pred]
             worst_pos_titles = ["Worst positive input image",
                                 "Worst positive anomaly map"]
 
@@ -292,6 +289,20 @@ class LitModel(pl.LightningModule):
 
 
 def train(args, trainer, train_files, test_files_normal, test_files_anomal):
+    # Init lighning model
+    if args.model_ckpt:
+        utils.printer(
+            f"Restoring checkpoint from {args.model_ckpt}", args.verbose)
+        model = LitModel.load_from_checkpoint(args.model_ckpt, args=args)
+    else:
+        model = LitModel(args)
+
+    # Tkinter backend fails on server, switching to Agg
+    if not args.debug:
+        matplotlib.use('Agg')
+        # Make wandb_logger watch model
+        trainer.logger.watch(model)
+
     # # Split into train- and val-files
     # random.shuffle(train_files)
     # split_idx = int((1 - args.val_fraction) * len(train_files))
@@ -315,28 +326,12 @@ def train(args, trainer, train_files, test_files_normal, test_files_anomal):
     val_labels = ([0] * len(val_files_normal)) + ([1] * len(val_files_anomal))
 
     train_ds = CXR14PatchSwapDataset(train_files, args.img_size,
-                                     anomaly_shape=args.anomaly_shape,
-                                     num_anomalies=0)
+                                     anomaly_shape=args.anomaly_shape)
     trainloader = DataLoader(train_ds, batch_size=args.batch_size,
-                             num_workers=0, shuffle=True)
+                             num_workers=args.num_workers, shuffle=True)
     val_ds = CXR14TestDataset(val_files, val_labels, args.img_size)
-    valloader = DataLoader(val_ds, batch_size=args.batch_size, num_workers=0)
-
-    args.M_N = args.batch_size / len(train_ds)
-
-    # Init lighning model
-    if args.model_ckpt:
-        utils.printer(
-            f"Restoring checkpoint from {args.model_ckpt}", args.verbose)
-        model = LitModel.load_from_checkpoint(args.model_ckpt, args=args)
-    else:
-        model = LitModel(args)
-
-    # Tkinter backend fails on server, switching to Agg
-    if not args.debug:
-        matplotlib.use('Agg')
-        # Make wandb_logger watch model
-        trainer.logger.watch(model)
+    valloader = DataLoader(val_ds, batch_size=args.batch_size,
+                           num_workers=args.num_workers)
 
     # Train
     model.start_time = time()
@@ -363,6 +358,7 @@ def test(args, trainer, test_files_normal, test_files_anomal, model=None):
         ckpt = os.path.join(artifact_dir, "model.ckpt")
         # load checkpoint
         model = LitModel.load_from_checkpoint(ckpt, args=args)
+        import IPython ; IPython.embed() ; exit(1)
 
     # Load data
     print("Loading data")
@@ -393,8 +389,8 @@ if __name__ == '__main__':
     parser.add_argument("--no_load_to_ram", dest="load_to_ram",
                         action="store_false")
     # Model params
-    parser.add_argument("--model", type=str, default="VAE")
-    parser.add_argument("--model_width", type=int, default=16)
+    parser.add_argument("--model", type=str, default="UNet")
+    parser.add_argument("--model_width", type=int, default=32)
     # Data params
     parser.add_argument("--img_size", type=int, default=256)
     parser.add_argument("--gender", type=str, default="Female",
@@ -404,6 +400,7 @@ if __name__ == '__main__':
     # Engineering params
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--precision", type=int, default=32)
+    parser.add_argument("--num_workers", type=int, default=8)
     # Logging params
     parser.add_argument("--log_dir", type=str,
                         default=f"{os.path.dirname(os.path.abspath(__file__))}/logs/cxr14")
@@ -452,10 +449,12 @@ if __name__ == '__main__':
         os.path.join(CXR14ROOT, f"test_lists/norm_{args.gender}AdultPA_test_list.txt"),
         base=os.path.join(CXR14ROOT, "images")
     )
+    shuffle(test_files_normal)
     test_files_anomal = utils.read_list_file_to_abs_path(
         os.path.join(CXR14ROOT, f"test_lists/anomaly_{args.gender}AdultPA_test_list.txt"),
         base=os.path.join(CXR14ROOT, "images")
     )
+    shuffle(test_files_anomal)
 
     if args.max_train_files is not None:
         train_files = train_files[:args.max_train_files]

@@ -290,9 +290,10 @@ class CXR14TestDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        filename = self.samples[idx]
         sample = load_image(self.samples[idx], self.img_size)
         label = self.labels[idx]
-        return sample, label
+        return sample, filename, label
 
 
 def get_train_files(root: str, body_region: str):
