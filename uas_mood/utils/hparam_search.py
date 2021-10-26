@@ -21,7 +21,7 @@ def hparam_search_run(config, args, trainer, train_files, train_fn):
     args.verbose = False
 
     # Ray tune doesn't need to do the full max_epochs
-    trainer.min_epochs = 1
+    # trainer.min_epochs = 1
 
     # Call train function
     train_fn(args, trainer, train_files)
@@ -33,7 +33,7 @@ def hparam_search(search_config, args, trainer, train_files, train_fn):
         metric=args.target_metric,
         mode="max",
         max_t=args.max_epochs,
-        grace_period=15,  # Run experiments at least this epochs
+        grace_period=6,  # Run experiments at least this epochs
         reduction_factor=2)
     reporter = CLIReporter(
         parameter_columns=list(search_config.keys()),

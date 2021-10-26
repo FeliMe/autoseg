@@ -1,16 +1,20 @@
+from PIL import Image
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 from skimage.exposure import equalize_hist
 from skimage.transform import resize
 import torch
+from torchvision import transforms
 
 
-def plot(image):
-    plt.figure(figsize=(4, 4))
+def plot(image, f=None):
     plt.axis("off")
     plt.imshow(image, cmap="gray", vmin=0., vmax=1.)
-    plt.show()
+    if f is None:
+        plt.show()
+    else:
+        plt.savefig(f, bbox_inches='tight', pad_inches=0)
 
 
 def volume_viewer(volume, initial_position=None, slices_first=True):
@@ -252,14 +256,26 @@ def load_segmentation(path: str, size: int = None, bin_threshold: float = 0.4):
     return segmentation
 
 
+def load_image(path: str, img_size: int = None):
+    img = Image.open(path).convert("L")
+    if img_size is None:
+        return transforms.ToTensor()(img)
+    else:
+        return transforms.Compose([
+            transforms.Resize(img_size),
+            transforms.ToTensor()
+        ])(img)
+
+
 if __name__ == '__main__':
     size = 256
     # path = "/home/felix/datasets/MOOD/brain/test_label/pixel/00480_uniform_shift.nii.gz"
     # path = "/home/felix/datasets/MOOD/abdom/test_label/pixel/00330_slice_shuffle.nii.gz"
     # segmentation = load_segmentation(path, size=size)
     # path = "/home/felix/datasets/MOOD/brain/test/00480_uniform_shift.nii.gz"
-    path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
+    # path = "/home/felix/datasets/MOOD/abdom/test/00330_slice_shuffle.nii.gz"
+    path = "/home/felix/datasets/MOOD/brain/train/00000.nii.gz"
     volume = process_scan(path, size=size, equalize_hist=False)
     print(volume.shape)
-    volume_viewer(volume, slices_first=True)
+    volume_viewer(volume)
     import IPython ; IPython.embed() ; exit(1)
